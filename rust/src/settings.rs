@@ -1,0 +1,206 @@
+//! Настройки: тот же settings.json, что у Python-версии (поля и значения совпадают).
+
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+use crate::appinfo::data_dir;
+
+pub const HEIGHTS: [u32; 6] = [0, 2160, 1440, 1080, 720, 480];
+pub const FPS_LIMITS: [u32; 5] = [0, 60, 30, 25, 24];
+pub const EDIT_FORMATS: [(&str, &str); 3] =
+    [("none", "Нет"), ("h264", "H.264 MP4 + AAC"), ("prores", "ProRes 422 HQ MOV + PCM")];
+pub const BROWSERS: [&str; 9] =
+    ["none", "firefox", "chrome", "edge", "brave", "opera", "vivaldi", "chromium", "file"];
+
+pub fn edit_name(key: &str) -> &'static str {
+    EDIT_FORMATS.iter().find(|(k, _)| *k == key).map(|(_, v)| *v).unwrap_or("Нет")
+}
+
+pub fn default_out() -> String {
+    let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+    home.join("Videos").join("Very Good Downloader").to_string_lossy().into_owned()
+}
+
+/// Папка по умолчанию до версии 1.4.
+fn old_default_out() -> String {
+    let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+    home.join("Videos").join("YouTube").to_string_lossy().into_owned()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub out_dir: String,
+    pub playlist: bool,
+    pub subs: bool,
+    pub sub_langs: String,
+    pub auto_subs: bool,
+    pub thumbnail: bool,
+    /// "none" / "h264" / "prores"
+    pub edit: String,
+    /// раскладывать по папкам Тема/Канал
+    pub sort: bool,
+    /// 0 = без ограничения, иначе 2160/1440/1080/720…
+    pub max_height: u32,
+    /// 0 = без ограничения; если формата нет — пересчёт ffmpeg
+    pub max_fps: u32,
+    /// браузер из BROWSERS или "file"; включается только при необходимости
+    pub cookies: String,
+    pub cookies_file: String,
+    /// масштаб интерфейса окна (1.0 = 100%)
+    pub ui_scale: f32,
+    /// размер окна при последнем закрытии (0 — по умолчанию)
+    pub win_w: f32,
+    pub win_h: f32,
+    /// музыка: "best" (как есть), "mp3", "m4a", "flac"
+    pub music_format: String,
+    /// ключ приложения Spotify (developer.spotify.com) — чтобы брать плейлисты больше 100 треков
+    pub spotify_id: String,
+    pub spotify_secret: String,
+    /// версия расширения браузера, которое уже связывалось с программой ("" — ещё ни разу)
+    pub ext_version: String,
+    /// вырезать спонсорские вставки (SponsorBlock)
+    pub sponsorblock: bool,
+    /// разбивать видео по главам на отдельные файлы
+    pub split_chapters: bool,
+    /// предлагать скачать скопированную ссылку
+    pub clipboard_watch: bool,
+    /// уведомление Windows, когда загрузка закончилась
+    pub notify_done: bool,
+    /// тексты песен с LRCLIB (.lrc рядом и внутри файла)
+    pub lyrics: bool,
+    /// подписки: каналы и плейлисты, из которых качаются только новые видео
+    pub subscriptions: Vec<Subscription>,
+    /// проверять подписки при запуске окна
+    pub subs_on_start: bool,
+    /// сворачивать окно в трей (значок у часов), а не на панель задач
+    pub tray: bool,
+}
+
+/// Подписка на канал или плейлист.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Subscription {
+    pub url: String,
+    pub name: String,
+    pub audio_only: bool,
+    /// не старше стольких дней (0 — без ограничения)
+    pub max_age_days: u32,
+    /// уже было запомнено, что есть на канале сейчас (старое не качаем)
+    pub seeded: bool,
+    /// когда проверяли последний раз (unix, секунды)
+    pub last_check: u64,
+}
+
+/// Разовые параметры одной загрузки (из главного окна или консоли).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct JobOpts {
+    /// фрагмент: «1:30», «90» или пусто
+    pub from: String,
+    pub to: String,
+    /// только звук
+    pub audio_only: bool,
+    /// только запомнить, что сейчас есть (первая проверка подписки)
+    pub seed_only: bool,
+    /// пропускать видео старше стольких дней (0 — все)
+    pub max_age_days: u32,
+}
+
+impl JobOpts {
+    pub fn has_section(&self) -> bool {
+        !self.from.trim().is_empty() || !self.to.trim().is_empty()
+    }
+
+    /// «*1:30-2:45» для yt-dlp --download-sections
+    pub fn section(&self) -> String {
+        let f = if self.from.trim().is_empty() { "0" } else { self.from.trim() };
+        let t = if self.to.trim().is_empty() { "inf" } else { self.to.trim() };
+        format!("*{f}-{t}")
+    }
+
+    /// Такой файл не совпадает с «обычной» загрузкой видео — архив не трогаем.
+    pub fn is_variant(&self) -> bool {
+        self.has_section() || self.audio_only
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            out_dir: default_out(),
+            playlist: true,
+            subs: true,
+            sub_langs: "ru,en".into(),
+            auto_subs: true,
+            thumbnail: true,
+            edit: "h264".into(),
+            sort: true,
+            max_height: 0,
+            max_fps: 0,
+            cookies: "firefox".into(),
+            cookies_file: String::new(),
+            ui_scale: 1.0,
+            win_w: 0.0,
+            win_h: 0.0,
+            music_format: "best".into(),
+            spotify_id: String::new(),
+            spotify_secret: String::new(),
+            ext_version: String::new(),
+            sponsorblock: false,
+            split_chapters: false,
+            clipboard_watch: false,
+            notify_done: true,
+            lyrics: true,
+            subscriptions: Vec::new(),
+            subs_on_start: true,
+            tray: true,
+        }
+    }
+}
+
+impl Settings {
+    pub fn file() -> PathBuf {
+        data_dir().join("settings.json")
+    }
+
+    pub fn load() -> Self {
+        let mut s: Self = std::fs::read_to_string(Self::file())
+            .ok()
+            // Блокнот и PowerShell 5 пишут UTF-8 с BOM — serde_json его не принимает.
+            .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
+            .unwrap_or_default();
+        // 1.4: папка по умолчанию «Видео\YouTube» → «Видео\Very Good Downloader» (переезжает вместе с содержимым).
+        if s.out_dir.eq_ignore_ascii_case(&old_default_out()) {
+            let new = default_out();
+            if !Path::new(&new).exists() && Path::new(&s.out_dir).exists() {
+                let _ = std::fs::rename(&s.out_dir, &new);
+            }
+            if Path::new(&new).exists() || !Path::new(&s.out_dir).exists() {
+                s.out_dir = new;
+                s.save();
+            }
+        }
+        s
+    }
+
+    pub fn save(&self) {
+        let f = Self::file();
+        if let Some(p) = f.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        if let Ok(t) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(f, t);
+        }
+    }
+
+    pub fn sub_lang_list(&self) -> Vec<String> {
+        let v: Vec<String> =
+            self.sub_langs.split(',').map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+        if v.is_empty() {
+            vec!["ru".into(), "en".into()]
+        } else {
+            v
+        }
+    }
+}

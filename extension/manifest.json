@@ -1,0 +1,143 @@
+{
+  "manifest_version": 3,
+  "name": "Very Good Downloader",
+  "version": "1.9.0",
+  "description": "Кнопка ↓ на YouTube, TikTok, Spotify, SoundCloud, Яндекс Музыке, Apple Music и VK: видео, трек или плейлист сразу уходит в программу Very Good Downloader.",
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "action": {
+    "default_title": "Скачать в Very Good Downloader",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "contextMenus",
+    "storage",
+    "downloads"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:38517/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "common.js",
+        "youtube.js"
+      ],
+      "css": [
+        "youtube.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://vk.com/*",
+        "https://vk.ru/*"
+      ],
+      "js": [
+        "vk-main.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://vk.com/*",
+        "https://vk.ru/*",
+        "https://m.vk.com/*",
+        "https://m.vk.ru/*"
+      ],
+      "js": [
+        "common.js",
+        "vk.js"
+      ],
+      "css": [
+        "youtube.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://open.spotify.com/*"
+      ],
+      "js": [
+        "common.js",
+        "spotify.js"
+      ],
+      "css": [
+        "youtube.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://soundcloud.com/*",
+        "https://m.soundcloud.com/*"
+      ],
+      "js": [
+        "common.js",
+        "soundcloud.js"
+      ],
+      "css": [
+        "youtube.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://music.yandex.ru/*",
+        "https://music.yandex.com/*",
+        "https://music.yandex.by/*",
+        "https://music.yandex.kz/*"
+      ],
+      "js": [
+        "common.js",
+        "yandex.js"
+      ],
+      "css": [
+        "youtube.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://music.apple.com/*"
+      ],
+      "js": [
+        "common.js",
+        "apple.js"
+      ],
+      "css": [
+        "youtube.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.tiktok.com/*"
+      ],
+      "js": [
+        "common.js",
+        "tiktok.js"
+      ],
+      "css": [
+        "youtube.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

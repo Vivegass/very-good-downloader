@@ -1,0 +1,301 @@
+/* Very Good Downloader: кнопки-значки под стиль каждого сайта + уведомление. */
+
+.vgd-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+}
+.vgd-icon .vgd-glyph {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+.vgd-icon.vgd-busy {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* YouTube — круг как у «Поделиться», только значок */
+.vgd-yt-inline {
+  width: 36px;
+  height: 36px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--yt-spec-badge-chip-background, rgba(255, 255, 255, 0.1));
+  color: var(--yt-spec-text-primary, #f1f1f1);
+}
+.vgd-yt-inline:hover {
+  background: var(--yt-spec-button-chip-background-hover, rgba(255, 255, 255, 0.2));
+}
+.vgd-yt-shorts {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  background: var(--yt-spec-badge-chip-background, rgba(255, 255, 255, 0.1));
+  color: var(--yt-spec-text-primary, #f1f1f1);
+}
+.vgd-yt-shorts .vgd-glyph {
+  width: 24px;
+  height: 24px;
+}
+
+/* Spotify — как «Добавить в медиатеку» */
+.vgd-sp-bar {
+  width: 32px;
+  height: 32px;
+  margin: 0 8px;
+  color: #b3b3b3;
+  transition: color 0.15s, transform 0.15s;
+}
+.vgd-sp-bar .vgd-glyph {
+  width: 28px;
+  height: 28px;
+}
+.vgd-sp-bar:hover {
+  color: #fff;
+  transform: scale(1.06);
+}
+.vgd-sp-row {
+  width: 28px;
+  height: 28px;
+  margin-right: 4px;
+  color: #b3b3b3;
+  opacity: 0;
+}
+[data-testid="tracklist-row"]:hover .vgd-sp-row,
+.vgd-sp-row:focus-visible {
+  opacity: 1;
+}
+.vgd-sp-row:hover {
+  color: #fff;
+}
+.vgd-sp-row .vgd-glyph {
+  width: 16px;
+  height: 16px;
+}
+
+.vgd-sp-player {
+  opacity: 1 !important;
+  margin-left: 8px;
+}
+
+/* SoundCloud — классы сайта .sc-button задают рамку и размер, значок по центру */
+.vgd-sc.sc-button {
+  color: #333;
+}
+.vgd-sc .vgd-glyph {
+  width: 14px;
+  height: 14px;
+}
+.vgd-sc.sc-button-medium .vgd-glyph {
+  width: 16px;
+  height: 16px;
+}
+
+/* Яндекс Музыка — кнопка берёт классы соседней кнопки сайта, здесь только значок */
+.vgd-ym {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+}
+.vgd-ym .vgd-glyph {
+  width: var(--vgd-glyph, 24px);
+  height: var(--vgd-glyph, 24px);
+}
+
+/* Apple Music — круглая кнопка в ряду «Воспроизвести / Перемешать», маленькая у трека */
+.vgd-am-wrap {
+  display: flex;
+  align-items: center;
+}
+.vgd-am-head {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--keyColor, #fa2d48);
+  color: #fff;
+}
+.vgd-am-head:hover {
+  filter: brightness(1.1);
+}
+.vgd-am-head .vgd-glyph {
+  width: 18px;
+  height: 18px;
+}
+.vgd-am-row {
+  width: 28px;
+  height: 28px;
+  margin-right: 6px;
+  border-radius: 50%;
+  color: var(--keyColor, #fa2d48);
+  opacity: 0;
+}
+.songs-list-row:hover .vgd-am-row {
+  opacity: 1;
+}
+.vgd-am-row .vgd-glyph {
+  width: 18px;
+  height: 18px;
+}
+
+/* TikTok — круг как у «лайк / поделиться» */
+.vgd-tt {
+  width: 48px;
+  height: 48px;
+  margin: 8px auto;
+  border-radius: 50%;
+  background: rgba(127, 127, 127, 0.18);
+  color: inherit;
+}
+.vgd-tt:hover {
+  background: rgba(127, 127, 127, 0.3);
+}
+.vgd-tt .vgd-glyph {
+  width: 24px;
+  height: 24px;
+}
+
+/* VK — как у VK Music Saver: значок 20 px в ряду действий трека, «Скачать» (кнопка VKUI secondary) в шапке плейлиста */
+.vgd-vk-row,
+.vgd-vk-head {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-sizing: border-box !important;
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  flex: none !important;
+  user-select: none;
+  transition: background-color 0.15s ease-out, opacity 0.15s ease-out;
+}
+.vgd-vk-row {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 0 !important;
+  margin: 0 var(--vkui--size_button_group_gap_medium--regular, 8px) !important;
+  padding: 0 !important;
+  border-radius: var(--vkui--size_border_radius--regular, 8px);
+  color: var(--vkui--color_icon_medium, #818c99);
+  background: transparent;
+}
+.vgd-vk-row:hover {
+  opacity: 0.8;
+}
+.vgd-vk-row .vgd-glyph,
+.vgd-vk-head .vgd-glyph {
+  display: block;
+  width: 20px !important;
+  height: 20px !important;
+}
+.vgd-vk-head {
+  gap: 6px;
+  height: 36px !important;
+  max-height: 36px !important;
+  padding: 0 16px 0 12px !important;
+  margin: 0 0 0 8px !important;
+  border-radius: var(--vkui--size_border_radius--regular, 8px);
+  background: var(--vkui--color_background_secondary_alpha, rgba(0, 28, 61, 0.05));
+  color: var(--vkui--color_text_primary, #000);
+  font: 500 14px/20px var(--vkui--font_family_base, -apple-system, "Segoe UI", Roboto, sans-serif);
+  white-space: nowrap;
+}
+.vgd-vk-head:hover {
+  background: var(--vkui--color_background_secondary_alpha--hover, rgba(0, 28, 61, 0.08));
+}
+.vgd-vk-head .vgd-glyph {
+  color: var(--vkui--color_icon_accent, #2688eb);
+}
+
+/* Шапка VK: кнопка берёт классы соседних белых кнопок — сбрасываем наши размеры */
+.vgd-vk-native {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: auto !important;
+}
+.vgd-vk-native .vgd-glyph {
+  display: block;
+  width: var(--vgd-glyph, 20px);
+  height: var(--vgd-glyph, 20px);
+}
+.vgd-vk-menu {
+  position: absolute;
+  z-index: 2147483000;
+  width: 240px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--vkui--color_background_modal, #fff);
+  color: var(--vkui--color_text_primary, #000);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  font: 14px/20px var(--vkui--font_family_base, -apple-system, "Segoe UI", Roboto, sans-serif);
+}
+.vgd-vk-menu-item {
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.vgd-vk-menu-item:hover {
+  background: var(--vkui--color_transparent--hover, rgba(0, 0, 0, 0.04));
+}
+
+/* Запасная круглая кнопка в углу (если разметка сайта поменялась) */
+.vgd-floating-icon {
+  position: fixed;
+  right: 24px;
+  bottom: 96px;
+  z-index: 2147483000;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #0b0b0b;
+  color: #f2f2f2;
+  border: 1px solid #2a2a2a;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+.vgd-floating-icon:hover {
+  background: #f2f2f2;
+  color: #000;
+}
+.vgd-floating-icon .vgd-glyph {
+  width: 22px;
+  height: 22px;
+}
+
+/* Уведомление */
+.vgd-toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 2147483001;
+  max-width: 360px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #0b0b0b;
+  color: #e8e8e8;
+  border: 1px solid #2a2a2a;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  font: 13px/1.4 "Cascadia Mono", Consolas, monospace;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.18s, transform 0.18s;
+}
+.vgd-toast.vgd-show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.vgd-toast[data-kind="ok"] {
+  color: #74d680;
+}
+.vgd-toast[data-kind="err"] {
+  color: #f06e6e;
+}
