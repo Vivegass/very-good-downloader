@@ -23,6 +23,11 @@ try {
     # Расширение для Chrome / Edge / Яндекс.Браузера — ставится «Загрузить распакованное».
     Copy-Item -Recurse (Join-Path $root 'extension') (Join-Path $dist 'extension')
     Copy-Item (Join-Path $here 'installer\Как установить.txt') $dist
+    # Firefox: подписанный Mozilla .xpi (rust\firefox.ps1; без ключей addons.mozilla.org — пропускается).
+    try {
+        $xpi = & (Join-Path $here 'firefox.ps1') | Select-Object -Last 1
+        if ($xpi -and (Test-Path $xpi)) { Copy-Item $xpi (Join-Path $dist 'extension-firefox.xpi') }
+    } catch { Write-Host "Firefox: расширение не собрано — $_" }
 
     # yt-dlp — всегда свежий с GitHub (YouTube часто ломает старые версии).
     New-Item -ItemType Directory -Force '_dl' | Out-Null

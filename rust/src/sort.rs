@@ -1,6 +1,6 @@
-//! Сортировка видео по папкам: Тема / Канал.
+//! Сортировка видео по папкам: Категория / Канал (в коде и topics.json — «тема», topic).
 //!
-//! Тема определяется по ключевым словам (название, теги, канал, плейлист) из topics.json,
+//! Категория определяется по ключевым словам (название, теги, канал, плейлист) из topics.json,
 //! если ничего не совпало — по категории YouTube. Каналы с похожими никами
 //! («STEALTH X» и «Stealth X Edits») попадают в одну папку.
 
@@ -58,6 +58,15 @@ fn topics_to_json(t: &Topics) -> String {
         m.insert(k.clone(), json!(v));
     }
     serde_json::to_string_pretty(&Value::Object(m)).unwrap_or_default()
+}
+
+/// Сохранить категории (из редактора в окне программы).
+pub fn save_topics(t: &Topics) -> Result<(), String> {
+    let f = topics_file();
+    if let Some(p) = f.parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+    std::fs::write(&f, topics_to_json(t)).map_err(|e| format!("не удалось сохранить категории: {e}"))
 }
 
 pub fn ensure_topics_file() -> PathBuf {

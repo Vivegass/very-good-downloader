@@ -38,7 +38,7 @@ pub struct Settings {
     pub thumbnail: bool,
     /// "none" / "h264" / "prores"
     pub edit: String,
-    /// раскладывать по папкам Тема/Канал
+    /// раскладывать по папкам Категория/Канал
     pub sort: bool,
     /// 0 = без ограничения, иначе 2160/1440/1080/720…
     pub max_height: u32,
@@ -75,6 +75,12 @@ pub struct Settings {
     pub subs_on_start: bool,
     /// сворачивать окно в трей (значок у часов), а не на панель задач
     pub tray: bool,
+    /// номер трека в имени файла: «01 - Исполнитель - Название»
+    pub music_numbers: bool,
+    /// недавние папки загрузок (для быстрой смены на главном экране), новые — первыми
+    pub recent_dirs: Vec<String>,
+    /// свёрнутые группы на странице настроек
+    pub collapsed: Vec<String>,
 }
 
 /// Подписка на канал или плейлист.
@@ -130,17 +136,17 @@ impl Default for Settings {
         Self {
             out_dir: default_out(),
             playlist: true,
-            subs: true,
+            subs: false,
             sub_langs: "ru,en".into(),
             auto_subs: true,
             thumbnail: true,
-            edit: "h264".into(),
-            sort: true,
+            edit: "none".into(),
+            sort: false,
             max_height: 0,
             max_fps: 0,
-            cookies: "firefox".into(),
+            cookies: "chrome".into(),
             cookies_file: String::new(),
-            ui_scale: 1.0,
+            ui_scale: 0.8,
             win_w: 0.0,
             win_h: 0.0,
             music_format: "best".into(),
@@ -151,10 +157,13 @@ impl Default for Settings {
             split_chapters: false,
             clipboard_watch: false,
             notify_done: true,
-            lyrics: true,
+            lyrics: false,
             subscriptions: Vec::new(),
             subs_on_start: true,
             tray: true,
+            music_numbers: true,
+            recent_dirs: Vec::new(),
+            collapsed: Vec::new(),
         }
     }
 }
@@ -192,6 +201,17 @@ impl Settings {
         if let Ok(t) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(f, t);
         }
+    }
+
+    /// Запомнить папку в недавних (до 6, без повторов).
+    pub fn remember_dir(&mut self, dir: &str) {
+        let dir = dir.trim().to_string();
+        if dir.is_empty() {
+            return;
+        }
+        self.recent_dirs.retain(|d| !d.eq_ignore_ascii_case(&dir));
+        self.recent_dirs.insert(0, dir);
+        self.recent_dirs.truncate(6);
     }
 
     pub fn sub_lang_list(&self) -> Vec<String> {

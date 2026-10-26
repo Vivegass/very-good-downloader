@@ -17,7 +17,7 @@ use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use vgd::downloader::{plan_existing, update_ytdlp, ytdlp_version, CancelHandle, DlError, Downloader, Progress};
 use vgd::settings::{JobOpts, Settings, Subscription, BROWSERS};
-use vgd::sort::{apply_plan, ensure_topics_file};
+use vgd::sort::{apply_plan, default_topics, load_topics, save_topics, Topics};
 
 // ---------- палитра ----------
 
@@ -202,6 +202,12 @@ struct App {
     pending_zoom: Option<f32>,
     /// после «установить в браузер»: в какой браузер ставим (показываем шаги)
     ext_steps: Option<&'static str>,
+    /// открыто из установщика (`--page=extension`): сразу предложить выбрать браузер
+    ext_wizard: bool,
+    /// редактор категорий: (название до правки, название, ключевые слова через запятую)
+    topics_edit: Option<Vec<(String, String, String)>>,
+    /// главный экран: раскрыт список папок загрузок
+    show_folders: bool,
     /// ссылки из командной строки («Very Good Downloader.exe <ссылка>») — запускаются сразу
     start_urls: Vec<String>,
 }
@@ -237,8 +243,11 @@ impl App {
         }
         let tray = make_tray(&cc.egui_ctx);
         // «--page=settings» / «--page=log» — открыть сразу нужную страницу.
-        let page = match std::env::args().find_map(|a| a.strip_prefix("--page=").map(String::from)).as_deref() {
-            Some("settings") => Page::Settings,
+        // «--page=extension» — из установщика: настройки с выбором браузера для расширения.
+        let page_arg = std::env::args().find_map(|a| a.strip_prefix("--page=").map(String::from));
+        let ext_wizard = page_arg.as_deref() == Some("extension");
+        let page = match page_arg.as_deref() {
+            Some("settings") | Some("extension") => Page::Settings,
             Some("log") => Page::Log,
             Some("subs") => Page::Subs,
             _ => Page::Download,
@@ -278,6 +287,9 @@ impl App {
             hidden: false,
             pending_zoom: None,
             ext_steps: None,
+            ext_wizard,
+            topics_edit: None,
+            show_folders: false,
             start_urls: ipc::launch_urls(std::env::args().skip(1)),
         }
     }
@@ -461,15 +473,80 @@ impl App {
         });
     }
 
-    fn edit_topics(&mut self) {
-        let f = ensure_topics_file();
-        info(
-            "Темы",
-            "Откроется файл с темами: название темы и ключевые слова.\n\
-             Тема выбирается по совпадениям в названии, тегах, нике канала и плейлисте;\n\
-             если совпадений нет — по категории YouTube.\nПосле правки сохраните файл.",
-        );
-        open_path(&f);
+    /// Заголовок группы настроек: щелчок сворачивает и разворачивает её (запоминается).
+    fn group(&mut self, ui: &mut egui::Ui, title: &str) -> bool {
+        let open = !self.s.collapsed.iter().any(|c| c == title);
+        ui.add_space(12.0);
+        let font = FontId::monospace(11.5);
+        let size = text_size(ui, title, &font) + Vec2::new(18.0, 4.0);
+        let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let color = if resp.hovered() { TEXT } else { MUTED };
+        // треугольник: ▾ — открыта, ▸ — свёрнута
+        let c = egui::pos2(rect.left() + 5.0, rect.center().y);
+        let pts = if open {
+            vec![c + Vec2::new(-4.0, -2.0), c + Vec2::new(4.0, -2.0), c + Vec2::new(0.0, 3.0)]
+        } else {
+            vec![c + Vec2::new(-2.0, -4.0), c + Vec2::new(3.0, 0.0), c + Vec2::new(-2.0, 4.0)]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+        ui.painter().text(egui::pos2(rect.left() + 16.0, rect.center().y), Align2::LEFT_CENTER, title, font, color);
+        if resp.clicked() {
+            if open {
+                self.s.collapsed.push(title.to_string());
+            } else {
+                self.s.collapsed.retain(|c| c != title);
+            }
+        }
+        ui.add_space(4.0);
+        open
+    }
+
+    /// Сменить папку загрузок (старая и новая остаются в списке недавних).
+    fn set_out_dir(&mut self, dir: String) {
+        let old = self.s.out_dir.clone();
+        self.s.remember_dir(&old);
+        self.s.out_dir = dir.clone();
+        self.s.remember_dir(&dir);
+        self.save_settings();
+    }
+
+    fn pick_out_dir(&mut self) {
+        let start = if Path::new(&self.s.out_dir).is_dir() { PathBuf::from(&self.s.out_dir) } else { PathBuf::from(vgd::settings::default_out()) };
+        if let Some(d) = rfd::FileDialog::new().set_directory(start).pick_folder() {
+            self.set_out_dir(d.display().to_string());
+        }
+    }
+
+    fn open_topics(&mut self) {
+        self.topics_edit = Some(load_topics().into_iter().map(|(n, w)| (n.clone(), n, w.join(", "))).collect());
+    }
+
+    /// Сохранить категории из редактора; переименованные — переименовать и их папки в папке загрузок.
+    fn save_topics_edit(&mut self, rows: Vec<(String, String, String)>) {
+        let mut topics: Topics = Vec::new();
+        for (orig, name, words) in &rows {
+            let name = vgd::sort::safe_name(name.trim(), 80);
+            if name.is_empty() || topics.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+                continue;
+            }
+            let words: Vec<String> =
+                words.split([',', '\n']).map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect();
+            if !orig.is_empty() && *orig != name {
+                let (from, to) = (Path::new(&self.s.out_dir).join(orig), Path::new(&self.s.out_dir).join(&name));
+                if from.is_dir() && !to.exists() {
+                    match std::fs::rename(&from, &to) {
+                        Ok(_) => self.add_log(format!("Папка «{orig}» переименована в «{name}».")),
+                        Err(e) => self.add_log(format!("Не удалось переименовать папку «{orig}»: {e}")),
+                    }
+                }
+            }
+            topics.push((name, words));
+        }
+        self.status = match save_topics(&topics) {
+            Ok(_) => format!("категории сохранены: {}", topics.len()),
+            Err(e) => e,
+        };
     }
 
     fn sort_existing(&mut self, ctx: &egui::Context) {
@@ -801,10 +878,68 @@ impl App {
                     });
                     ui.add_space(4.0);
                 }
-                let summary = if music_mode { self.music_summary() } else { self.summary() };
-                let r = ui.add(egui::Label::new(RichText::new(summary).size(11.5).color(FAINT)).sense(Sense::click()).truncate());
-                if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("открыть настройки").clicked() {
-                    self.page = Page::Settings;
+                // Папка загрузок (щелчок — недавние папки и «другая папка…») и кратко о настройках (щелчок — настройки).
+                ui.horizontal(|ui| {
+                    if link(ui, &format!("папка: {} ▾", short_dir(&self.s.out_dir))).on_hover_text(&self.s.out_dir).clicked() {
+                        self.show_folders = !self.show_folders;
+                    }
+                    ui.label(RichText::new("·").size(11.5).color(FAINT));
+                    let summary = if music_mode { self.music_summary() } else { self.summary() };
+                    let r = ui.add(egui::Label::new(RichText::new(summary).size(11.5).color(FAINT)).sense(Sense::click()).truncate());
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("открыть настройки").clicked() {
+                        self.page = Page::Settings;
+                    }
+                });
+                if self.show_folders {
+                    ui.add_space(4.0);
+                    let mut pick: Option<String> = None;
+                    let mut other = false;
+                    let current = self.s.out_dir.clone();
+                    let recent: Vec<String> = self
+                        .s
+                        .recent_dirs
+                        .iter()
+                        .filter(|d| !d.eq_ignore_ascii_case(&current) && Path::new(d.as_str()).is_dir())
+                        .cloned()
+                        .collect();
+                    card(ui, |ui| {
+                        for d in std::iter::once(&current).chain(recent.iter()) {
+                            let is_current = *d == current;
+                            ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 32.0), Layout::left_to_right(Align::Center), |ui| {
+                                let (r, _) = ui.allocate_exact_size(Vec2::new(16.0, 16.0), Sense::hover());
+                                paint_folder(ui.painter(), r.center(), if is_current { TEXT } else { MUTED });
+                                let w = (ui.available_width() - 90.0).max(60.0);
+                                ui.allocate_ui(Vec2::new(w, 20.0), |ui| {
+                                    ui.add(egui::Label::new(RichText::new(d.as_str()).size(12.5).color(if is_current { TEXT } else { MUTED })).truncate());
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if is_current {
+                                        ui.label(RichText::new("сейчас").size(11.5).color(OK));
+                                    } else if small_pill(ui, "выбрать").clicked() {
+                                        pick = Some(d.clone());
+                                    }
+                                });
+                            });
+                        }
+                        divider(ui);
+                        ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 36.0), Layout::left_to_right(Align::Center), |ui| {
+                            if small_pill(ui, "другая папка…").clicked() {
+                                other = true;
+                            }
+                            if small_pill(ui, "открыть").clicked() {
+                                let _ = std::fs::create_dir_all(&current);
+                                open_path(Path::new(&current));
+                            }
+                        });
+                    });
+                    if let Some(d) = pick {
+                        self.set_out_dir(d);
+                        self.show_folders = false;
+                    }
+                    if other {
+                        self.pick_out_dir();
+                        self.show_folders = false;
+                    }
                 }
 
                 ui.add_space(16.0);
@@ -863,13 +998,8 @@ impl App {
             parts.push(format!("до {} fps", self.s.max_fps));
         }
         if self.s.sort {
-            parts.push("тема / канал".into());
+            parts.push("категория / канал".into());
         }
-        let folder = Path::new(&self.s.out_dir);
-        let comps: Vec<String> =
-            folder.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-        let short = comps[comps.len().saturating_sub(2)..].join("\\");
-        parts.push(format!("…\\{short}"));
         parts.join("  ·  ")
     }
 
@@ -884,10 +1014,11 @@ impl App {
                 ui.label(RichText::new("настройки").size(17.0).color(TEXT));
                 ui.add_space(10.0);
 
-                group_title(ui, "расширение для браузера");
-                self.ui_extension(ui);
+                if self.group(ui, "расширение для браузера") || self.ext_wizard {
+                    self.ui_extension(ui);
+                }
 
-                group_title(ui, "сохранение");
+                if self.group(ui, "сохранение") {
                 card(ui, |ui| {
                     ui.horizontal(|ui| {
                         let (r, _) = ui.allocate_exact_size(Vec2::new(16.0, 16.0), Sense::hover());
@@ -906,13 +1037,13 @@ impl App {
                                     PathBuf::from(vgd::settings::default_out())
                                 };
                                 if let Some(d) = rfd::FileDialog::new().set_directory(start).pick_folder() {
-                                    self.s.out_dir = d.display().to_string();
+                                    self.set_out_dir(d.display().to_string());
                                 }
                             }
                         });
                     });
                     divider(ui);
-                    row(ui, "раскладывать по папкам тема / канал", "тема — по ключевым словам в названии, тегах, нике и плейлисте, иначе по категории youtube или названию сайта. похожие ники попадают в одну папку.", |ui| {
+                    row(ui, "раскладывать по папкам категория / канал", "категория — по ключевым словам в названии, тегах, нике и плейлисте, иначе по рубрике youtube или названию сайта. похожие ники попадают в одну папку. категории и их слова настраиваются кнопкой «категории…» ниже.", |ui| {
                         toggle(ui, &mut self.s.sort);
                     });
                     divider(ui);
@@ -920,17 +1051,18 @@ impl App {
                         toggle(ui, &mut self.s.playlist);
                     });
                     divider(ui);
-                    row(ui, "темы и старые файлы", "«темы» — открыть список тем и ключевых слов. «разложить» — разложить уже скачанные файлы с [id] в имени: сначала покажет план.", |ui| {
+                    row(ui, "категории и уже скачанное", "«категории» — папки, по которым раскладываются видео, и слова, по которым они выбираются. «разложить» — разложить уже скачанные файлы с [id] в имени: сначала покажет план.", |ui| {
                         if small_pill_enabled(ui, "разложить…", !self.side_task).clicked() {
                             self.sort_existing(&ctx);
                         }
-                        if small_pill(ui, "темы…").clicked() {
-                            self.edit_topics();
+                        if small_pill(ui, "категории…").clicked() {
+                            self.open_topics();
                         }
                     });
                 });
+                }
 
-                group_title(ui, "видео");
+                if self.group(ui, "видео") {
                 card(ui, |ui| {
                     row(ui, "качество", "по меньшей стороне кадра: вертикальное 1080×1920 — это 1080p. если такого нет, берётся ближайшее ниже.", |ui| {
                         let opts: Vec<(u32, String)> =
@@ -984,8 +1116,9 @@ impl App {
                         });
                     }
                 });
+                }
 
-                group_title(ui, "музыка");
+                if self.group(ui, "музыка") {
                 card(ui, |ui| {
                     row(ui, "формат", "«как есть» — лучший звук сервиса без перекодирования (opus или m4a). mp3 320 и m4a — для старых плееров и машин. flac не добавит качества к сжатому источнику, но нужен некоторым программам. hi-res (24 бит) сервисы бесплатно не отдают.", |ui| {
                         let opts = vec![
@@ -997,6 +1130,10 @@ impl App {
                         segmented(ui, &mut self.s.music_format, &opts);
                     });
                     divider(ui);
+                    row(ui, "номер трека в имени файла", "«01 - исполнитель - название» — файлы идут по порядку плейлиста в любой папке. выключено — «исполнитель - название», порядок остаётся в плейлисте .m3u8 и тегах.", |ui| {
+                        toggle(ui, &mut self.s.music_numbers);
+                    });
+                    divider(ui);
                     row(ui, "тексты песен", "текст с lrclib.net: внутри файла (видно в плеерах) и .lrc рядом — для бегущего текста.", |ui| {
                         toggle(ui, &mut self.s.lyrics);
                     });
@@ -1006,10 +1143,11 @@ impl App {
                         ui.add(egui::TextEdit::singleline(&mut self.s.spotify_id).hint_text("client id").desired_width(150.0));
                     });
                     divider(ui);
-                    row(ui, "spotify и vk из браузера", "spotify отдаёт программе только 100 треков, а vk — ничего без входа. откройте плейлист в браузере и нажмите кнопку расширения «скачать плейлист» — весь список уйдёт в программу. звук spotify и vk не отдают: программа берёт его с youtube music, soundcloud или youtube — так же заменяются заблокированные треки.", |_ui| {});
+                    row(ui, "spotify и vk из браузера", "spotify отдаёт программе только 100 треков, а vk — ничего без входа. откройте плейлист в браузере и нажмите кнопку расширения «скачать плейлист» — весь список уйдёт в программу. звук vk берётся прямо из vk; звук spotify — с youtube music, soundcloud или youtube. так же заменяются заблокированные треки.", |_ui| {});
                 });
+                }
 
-                group_title(ui, "интерфейс");
+                if self.group(ui, "интерфейс") {
                 card(ui, |ui| {
                     row(ui, "предлагать скачать скопированную ссылку", "когда в буфере обмена появляется ссылка на видео или музыку, на главной появляется плашка «скачать».", |ui| {
                         toggle(ui, &mut self.s.clipboard_watch);
@@ -1033,8 +1171,9 @@ impl App {
                         }
                     });
                 });
+                }
 
-                group_title(ui, "доступ и обновления");
+                if self.group(ui, "доступ и обновления") {
                 card(ui, |ui| {
                     row(ui, "куки для 18+ и закрытых", "берутся, только если без входа видео недоступно: с ними youtube отдаёт меньше форматов. chrome и edge шифруют куки — лучше firefox или файл cookies.txt.", |ui| {
                         let prev = self.s.cookies.clone();
@@ -1065,6 +1204,7 @@ impl App {
                         }
                     });
                 });
+                }
                 if !self.status.is_empty() && self.side_task {
                     hint(ui, &self.status);
                 }
@@ -1201,13 +1341,62 @@ impl App {
             let _ = c.set_text(dst.display().to_string());
         }
         let _ = std::process::Command::new(browser).arg(page).spawn();
-        open_path(&dst);
+        // Проводник на уровень выше, с выделенной папкой extension — её сразу видно и можно перетащить.
+        reveal(&dst);
         self.ext_steps = Some(name);
+    }
+
+    /// Firefox ставит только подписанные Mozilla расширения: открываем .xpi — Firefox сам спросит «Добавить?».
+    fn install_firefox(&mut self, browser: &Path) {
+        let Some(xpi) = vgd::appinfo::firefox_xpi() else {
+            self.status = "расширение для firefox не найдено рядом с программой — переустановите программу".into();
+            return;
+        };
+        if let Ok(exe) = std::env::current_exe() {
+            ipc::register_protocol(&exe);
+        }
+        let _ = std::process::Command::new(browser).arg(&xpi).spawn();
+        self.ext_steps = Some("Firefox");
+    }
+
+    /// Кнопки браузеров для установки расширения.
+    fn browser_buttons(&mut self, ui: &mut egui::Ui) {
+        let browsers = vgd::appinfo::browsers();
+        let firefox = vgd::appinfo::firefox();
+        if browsers.is_empty() && firefox.is_none() {
+            ui.label(RichText::new("chrome, edge, яндекс.браузер и firefox не найдены").size(12.0).color(MUTED));
+        }
+        if let Some(ff) = firefox {
+            if small_pill(ui, "Firefox").clicked() {
+                self.install_firefox(&ff);
+            }
+        }
+        for (name, exe, page) in browsers.iter().rev() {
+            if small_pill(ui, name).clicked() {
+                let (name, exe, page) = (*name, exe.clone(), *page);
+                self.install_extension(name, &exe, page);
+            }
+        }
     }
 
     fn ui_extension(&mut self, ui: &mut egui::Ui) {
         let seen = ipc::extension_version().or_else(|| (!self.s.ext_version.is_empty()).then(|| self.s.ext_version.clone()));
-        let browsers = vgd::appinfo::browsers();
+        if self.ext_wizard && seen.is_none() {
+            // Открыто сразу после установки программы.
+            egui::Frame::new().fill(Color32::from_rgb(0x10, 0x16, 0x10)).corner_radius(12).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("поставьте расширение — на сайтах появятся кнопки ↓").size(13.0).color(TEXT));
+                ui.add(egui::Label::new(RichText::new("выберите браузер: программа откроет его и подскажет, что нажать. это минута.").size(12.0).color(MUTED)).wrap());
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    self.browser_buttons(ui);
+                    if link(ui, "позже").clicked() {
+                        self.ext_wizard = false;
+                    }
+                });
+            });
+            ui.add_space(6.0);
+        }
         card(ui, |ui| {
             let status = match &seen {
                 Some(v) => format!("подключено · v{v}"),
@@ -1217,29 +1406,31 @@ impl App {
                 ui.label(RichText::new(status).size(12.0).color(if seen.is_some() { OK } else { MUTED }));
             });
             divider(ui);
-            row(ui, "установить в браузер", "браузеры не дают программам ставить расширения сами — это защита от вирусов. программа сделает всё остальное: подготовит папку, скопирует её путь и откроет страницу расширений.", |ui| {
-                if browsers.is_empty() {
-                    ui.label(RichText::new("chrome, edge и яндекс.браузер не найдены").size(12.0).color(MUTED));
-                }
-                for (name, exe, page) in browsers.iter().rev() {
-                    if small_pill(ui, name).clicked() {
-                        let (name, exe, page) = (*name, exe.clone(), *page);
-                        self.install_extension(name, &exe, page);
-                    }
-                }
+            row(ui, "установить в браузер", "chrome, edge и яндекс.браузер не дают программам ставить расширения сами — программа подготовит папку, скопирует её путь и откроет страницу расширений. в firefox расширение ставится одной кнопкой «добавить».", |ui| {
+                self.browser_buttons(ui);
             });
         });
         if let Some(name) = self.ext_steps {
             ui.add_space(6.0);
             egui::Frame::new().fill(Color32::from_rgb(0x10, 0x16, 0x10)).corner_radius(12).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(format!("осталось два щелчка в «{name}»:")).size(12.5).color(TEXT));
+                let firefox = name == "Firefox";
+                ui.label(RichText::new(if firefox { "осталось нажать «добавить» в firefox:".to_string() } else { format!("осталось два щелчка в «{name}»:") }).size(12.5).color(TEXT));
                 ui.add_space(4.0);
-                for step in [
-                    "1. на открывшейся странице расширений включите «режим разработчика» (переключатель вверху справа);",
-                    "2. нажмите «загрузить распакованное расширение», вставьте путь (ctrl+v — он уже скопирован) и нажмите «выбор папки». можно и проще: перетащите папку extension из открытого окна проводника прямо на страницу расширений;",
-                    "3. готово — кнопки ↓ появятся на сайтах. если расширение уже было — нажмите у него ↻, чтобы обновить.",
-                ] {
+                let steps: &[&str] = if firefox {
+                    &[
+                        "1. firefox спросит «добавить very good downloader?» — нажмите «добавить»;",
+                        "2. если firefox попросит доступ к сайтам — разрешите, без него кнопки ↓ не появятся;",
+                        "3. при первом нажатии ↓ при закрытой программе firefox спросит, чем открыть ссылку vgd:// — выберите very good downloader и отметьте «запомнить».",
+                    ]
+                } else {
+                    &[
+                        "1. на открывшейся странице расширений включите «режим разработчика» (переключатель вверху справа);",
+                        "2. в открывшемся проводнике уже выделена папка extension — перетащите её на страницу расширений. или нажмите «загрузить распакованное расширение», вставьте путь (ctrl+v — он уже скопирован) и «выбор папки»;",
+                        "3. готово — кнопки ↓ появятся на сайтах. если расширение уже было — нажмите у него ↻, чтобы обновить.",
+                    ]
+                };
+                for &step in steps {
                     ui.add(egui::Label::new(RichText::new(step).size(12.0).color(MUTED)).wrap());
                 }
                 ui.add_space(4.0);
@@ -1341,6 +1532,80 @@ impl App {
             self.status = format!("разложено файлов: {n}");
         } else if close {
             self.sort_plan = None;
+        }
+    }
+
+    /// Редактор категорий: название (= папка) и слова, по которым видео туда попадает.
+    fn ui_topics(&mut self, ctx: &egui::Context) {
+        let Some(rows) = self.topics_edit.as_mut() else { return };
+        let mut close = false;
+        let mut save = false;
+        let mut remove = None;
+        let mut up = None;
+        egui::Modal::new(egui::Id::unique("topics")).show(ctx, |ui| {
+            ui.set_width(620.0);
+            ui.label(RichText::new("категории").size(18.0).color(TEXT));
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(
+                "категория — это папка в папке загрузок. видео попадает в неё, если в названии, тегах, нике канала или плейлисте есть её слова. \
+                 при равенстве выигрывает категория выше. ничего не подошло — рубрика youtube (игры, музыка…) или «разное».",
+            ).size(12.0).color(MUTED)).wrap());
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical().max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
+                for (i, (_, name, words)) in rows.iter_mut().enumerate() {
+                    egui::Frame::new().fill(SURFACE).corner_radius(10).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(name).hint_text("название").desired_width(200.0));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if icon_button(ui, I_CLOSE, "удалить категорию").clicked() {
+                                    remove = Some(i);
+                                }
+                                if i > 0 && small_pill(ui, "выше").clicked() {
+                                    up = Some(i);
+                                }
+                            });
+                        });
+                        ui.add(
+                            egui::TextEdit::multiline(words)
+                                .hint_text("слова через запятую: edit, эдит, amv")
+                                .desired_rows(2)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                    ui.add_space(6.0);
+                }
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if small_pill(ui, "+ категория").clicked() {
+                    rows.push((String::new(), String::new(), String::new()));
+                }
+                if small_pill(ui, "стандартные").on_hover_text("вернуть категории, которые были при установке").clicked() {
+                    *rows = default_topics().into_iter().map(|(n, w)| (String::new(), n, w.join(", "))).collect();
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if pill(ui, None, "сохранить", true, true).clicked() {
+                        save = true;
+                    }
+                    if pill(ui, None, "отмена", false, true).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        });
+        if let Some(i) = remove {
+            rows.remove(i);
+        }
+        if let Some(i) = up {
+            rows.swap(i, i - 1);
+        }
+        if save {
+            if let Some(rows) = self.topics_edit.take() {
+                self.save_topics_edit(rows);
+            }
+        } else if close {
+            self.topics_edit = None;
         }
     }
 
@@ -1499,6 +1764,7 @@ impl eframe::App for App {
             Some(v) if v != self.s.ext_version => {
                 self.s.ext_version = v;
                 self.ext_steps = None;
+                self.ext_wizard = false;
                 self.save_settings();
             }
             Some(_) => {}
@@ -1535,6 +1801,7 @@ impl eframe::App for App {
         });
 
         self.ui_sort_plan(&ctx);
+        self.ui_topics(&ctx);
         self.ui_confirm_exit(&ctx);
         if self.busy() || self.side_task {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -1543,6 +1810,15 @@ impl eframe::App for App {
 }
 
 // ---------- элементы интерфейса ----------
+
+/// «…\Videos\Very Good Downloader» — две последние части пути.
+fn short_dir(dir: &str) -> String {
+    let comps: Vec<String> = Path::new(dir).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    if comps.len() <= 2 {
+        return dir.to_string();
+    }
+    format!("…\\{}", comps[comps.len() - 2..].join("\\"))
+}
 
 fn same(a: &Settings, b: &Settings) -> bool {
     serde_json::to_string(a).ok() == serde_json::to_string(b).ok()
@@ -1612,13 +1888,6 @@ fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, value: &mut T, opts: &[(T,
         });
     });
     changed
-}
-
-/// Подзаголовок группы настроек.
-fn group_title(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(12.0);
-    ui.label(RichText::new(title).size(11.5).color(MUTED));
-    ui.add_space(4.0);
 }
 
 /// Карточка с несколькими строками настроек.

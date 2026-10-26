@@ -85,6 +85,38 @@ pub fn browsers() -> Vec<(&'static str, PathBuf, &'static str)> {
         .collect()
 }
 
+/// Firefox, если установлен.
+pub fn firefox() -> Option<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).map(PathBuf::from).unwrap_or_default();
+    [
+        env("ProgramFiles").join(r"Mozilla Firefox\firefox.exe"),
+        env("ProgramFiles(x86)").join(r"Mozilla Firefox\firefox.exe"),
+        env("LOCALAPPDATA").join(r"Mozilla Firefox\firefox.exe"),
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
+}
+
+/// Подписанное Mozilla расширение для Firefox: рядом с программой (установка)
+/// или последнее собранное в `rust\_dl\firefox` (разработка).
+pub fn firefox_xpi() -> Option<PathBuf> {
+    let app = app_dir();
+    if let Some(p) = app.ancestors().take(5).map(|d| d.join("extension-firefox.xpi")).find(|p| p.is_file()) {
+        return Some(p);
+    }
+    app.ancestors()
+        .take(5)
+        .map(|d| d.join(r"_dl\firefox"))
+        .find(|d| d.is_dir())
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "xpi"))
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
 /// Скопировать расширение в постоянную папку `%APPDATA%\VeryGoodDownloader\extension`:
 /// она не меняется при обновлении программы, и браузер не теряет расширение.
 pub fn install_extension_files() -> Result<PathBuf, String> {

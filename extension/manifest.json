@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Very Good Downloader",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "Кнопка ↓ на YouTube, TikTok, Spotify, SoundCloud, Яндекс Музыке, Apple Music и VK: видео, трек или плейлист сразу уходит в программу Very Good Downloader.",
   "icons": {
     "16": "icons/16.png",

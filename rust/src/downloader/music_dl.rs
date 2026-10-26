@@ -184,7 +184,7 @@ impl Downloader {
         let total = todo.len();
         let queue = std::sync::Arc::new(std::sync::Mutex::new(todo));
         let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (tx, rx) = std::sync::mpsc::channel::<(Track, R<PathBuf>)>();
+        let (tx, rx) = std::sync::mpsc::channel::<(usize, Track, R<PathBuf>)>();
         // Несколько треков сразу: поиск и скачивание идут параллельно (быстрее в 2–3 раза).
         let workers = if list.single { 1 } else { 4 }.min(total.max(1));
         let mut handles = Vec::new();
@@ -192,13 +192,15 @@ impl Downloader {
             let mut w = self.fork();
             let (queue, started, tx) = (queue.clone(), started.clone(), tx.clone());
             let (dir, single, by_album) = (dir.clone(), list.single, list.by_album);
+            // Номер в имени файла — можно выключить в настройках музыки.
+            let numbers = w.s.music_numbers && !single;
             handles.push(std::thread::spawn(move || loop {
-                let Some((_i, num, t)) = queue.lock().unwrap().pop_front() else { break };
+                let Some((i, num, t)) = queue.lock().unwrap().pop_front() else { break };
                 if w.check_cancel().is_err() {
                     break;
                 }
                 if let Err(e) = w.wait_proxy() {
-                    let _ = tx.send((t, Err(e)));
+                    let _ = tx.send((i, t, Err(e)));
                     break;
                 }
                 let k = started.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -213,7 +215,7 @@ impl Downloader {
                 w.emit();
                 let tdir = if by_album { dir.join(safe_name(&t.album, 100)) } else { dir.clone() };
                 let _ = std::fs::create_dir_all(&tdir);
-                let prefix = (!single).then(|| format!("{:0width$}", num, width = if by_album { 2 } else { width }));
+                let prefix = numbers.then(|| format!("{:0width$}", num, width = if by_album { 2 } else { width }));
                 // Обрыв связи (переключили VPN) — ждём сеть и повторяем этот же трек, а не пропускаем его.
                 let mut net_retries = 0;
                 let result = loop {
@@ -229,24 +231,24 @@ impl Downloader {
                     }
                 };
                 let cancelled = matches!(result, Err(DlError::Cancelled(_)));
-                let _ = tx.send((t, result));
+                let _ = tx.send((i, t, result));
                 if cancelled {
                     break;
                 }
             }));
         }
         drop(tx);
-        let mut m3u: Vec<String> = Vec::new();
+        let mut m3u: Vec<(usize, String)> = Vec::new();
         let mut not_found: Vec<String> = Vec::new();
         let mut cancelled: Option<DlError> = None;
-        for (t, result) in rx {
+        for (i, t, result) in rx {
             match result {
                 Ok(path) => {
                     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&archive_path) {
                         let _ = writeln!(f, "{}", t.key);
                     }
                     if let Ok(rel) = path.strip_prefix(&dir) {
-                        m3u.push(rel.to_string_lossy().replace('\\', "/"));
+                        m3u.push((i, rel.to_string_lossy().replace('\\', "/")));
                     }
                     self.results.push(path.to_string_lossy().into_owned());
                 }
@@ -271,12 +273,16 @@ impl Downloader {
             let mut lines: Vec<String> = std::fs::read_to_string(&p)
                 .map(|t| t.lines().map(String::from).filter(|l| !l.is_empty() && l != "#EXTM3U").collect())
                 .unwrap_or_default();
-            for f in m3u {
+            // Порядок плейлиста: с номерами — по именам файлов, без номеров — новые треки в порядке списка.
+            m3u.sort();
+            for (_, f) in m3u {
                 if !lines.contains(&f) {
                     lines.push(f);
                 }
             }
-            lines.sort();
+            if self.s.music_numbers {
+                lines.sort();
+            }
             let _ = std::fs::write(&p, format!("#EXTM3U\n{}\n", lines.join("\n")));
         }
         super::remove_empty_dirs(&root.join(".parts"));

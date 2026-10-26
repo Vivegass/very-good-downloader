@@ -2,7 +2,7 @@
 ; AppId тот же, что у Python-версии: установка поверх обновляет её, а не ставит вторую копию.
 #define AppName "Very Good Downloader"
 #ifndef AppVersion
-  #define AppVersion "1.9.0"
+  #define AppVersion "1.10.0"
 #endif
 #define AppExe "Very Good Downloader.exe"
 
@@ -60,7 +60,9 @@ Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; Сразу после установки — предложить поставить расширение (программа откроется с выбором браузера).
+Filename: "{app}\{#AppExe}"; Parameters: "--page=extension"; Description: "Запустить и установить расширение для браузера (кнопки ↓ на сайтах)"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent unchecked
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
