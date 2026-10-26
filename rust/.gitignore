@@ -1,4 +1,4 @@
-target/
-bin/
-dist/
-_dl/
+/target/
+/bin/
+/dist/
+/_dl/
