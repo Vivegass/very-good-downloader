@@ -30,7 +30,7 @@ try {
     Copy-Item '_dl\yt-dlp.exe' $bin
 
     # ffmpeg (FFmpeg Essentials; ffprobe не нужен — сведения о файле берутся из ffmpeg).
-    $ff = Get-ChildItem (Join-Path $root 'installer\_dl\ff'), '_dl\ff' -Recurse -Filter ffmpeg.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    $ff = Get-ChildItem '_dl\ff' -Recurse -Filter ffmpeg.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $ff) {
         Invoke-WebRequest -UseBasicParsing 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile '_dl\ff.zip'
         Expand-Archive -Force '_dl\ff.zip' '_dl\ff'

@@ -1,14 +1,5 @@
 # сборка
 release/
-installer/_dl/
-installer/.buildenv/
-installer/build/
-installer/dist/
-
-# Python
-.venv/
-__pycache__/
-*.pyc
 
 # внутренние заметки (личные данные прежнего владельца) — только локально
 HANDOFF.md

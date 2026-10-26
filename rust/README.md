@@ -1,17 +1,16 @@
-# Very Good Downloader — Rust-версия (1.1.0)
+# Very Good Downloader
 
-Тот же загрузчик, что и Python-версия рядом, но окно и консоль написаны на Rust.
-Сам YouTube по-прежнему качает **yt-dlp.exe** (аналога на Rust, который успевал бы за YouTube, нет),
+Окно и консоль на Rust. Сам YouTube качает **yt-dlp.exe** (аналога на Rust, который успевал бы за YouTube, нет),
 ffmpeg делает копии для монтажа, deno нужен yt-dlp для всех форматов.
 
 | Файл | Что это |
 |---|---|
 | `Very Good Downloader.exe` (`vgd-gui`) | окно, egui/glow, ~4,6 МБ |
-| `vgd.exe` | консоль, ~0,6 МБ, те же ключи, что у Python-версии + `--watch` вместо progress.py |
+| `vgd.exe` | консоль, ~0,6 МБ, `vgd --help` — все ключи, `--watch` — прогресс фоновой загрузки |
 | `bin\yt-dlp.exe`, `bin\ffmpeg.exe`, `bin\deno.exe` | внешние программы; ffprobe больше не нужен |
 
-Настройки и темы общие с Python-версией: `%APPDATA%\VeryGoodDownloader\settings.json`, `topics.json`.
-Архив `.ytdl_archive.txt` и индекс каналов `.ytdl_index.json` в папке загрузок — тоже в том же формате.
+Настройки и темы: `%APPDATA%\VeryGoodDownloader\settings.json`, `topics.json`.
+Архив `.ytdl_archive.txt` и индекс каналов `.ytdl_index.json` — в папке загрузок.
 
 ## Сборка
 
@@ -20,8 +19,8 @@ powershell -ExecutionPolicy Bypass -File rust\build.ps1
 ```
 
 Собирает `cargo build --release`, кладёт всё в `rust\dist\VeryGoodDownloader\` и, если установлен
-Inno Setup 6, делает `release\VeryGoodDownloader-Setup-<версия>.exe`. Установщик с тем же AppId,
-что у 1.0.0: ставится поверх Python-версии и удаляет её `_internal`.
+Inno Setup 6, делает `release\VeryGoodDownloader-Setup-<версия>.exe`. Установщик ставится поверх
+старых версий (тот же AppId) и удаляет остатки версии 1.0 (`_internal`).
 
 Для разработки: положить `yt-dlp.exe`, `ffmpeg.exe`, `deno.exe` в `rust\bin\` — программа из
 `target\release` найдёт их там. Тесты: `cargo test --lib`.
@@ -34,11 +33,11 @@ Inno Setup 6, делает `release\VeryGoodDownloader-Setup-<версия>.exe`
   Плейлист/канал сначала разворачивается через `--flat-playlist`, уже скачанное пропускается по архиву.
 - `net.rs` — проверка прокси/VPN (HTTP(S)_PROXY или системный прокси Windows). Если порт не отвечает —
   понятное сообщение и пауза, пока он не вернётся; видео, упавшее из-за прокси, повторяется.
-- `sort.rs` — темы и похожие ники (порт ytdl_sort.py, тот же SequenceMatcher).
+- `sort.rs` — темы и похожие ники (сравнение как у Python difflib.SequenceMatcher).
 - `media.rs` — сведения о файле из `ffmpeg -i` (без ffprobe).
 - `watch.rs` — `vgd --watch [папка]`: прогресс фоновой загрузки по `download_log.txt`.
 
-Отличия от Python-версии (доделки из HANDOFF):
+Устойчивость загрузки:
 - проверка VPN/прокси перед стартом и перед каждым видео;
 - видео с HTTP 403 повторяются в конце через 30 с;
 - автосубтитры только на языке оригинала (`xx-orig`): автоперевод почти всегда давал 429;

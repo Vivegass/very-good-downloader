@@ -4,8 +4,7 @@
 SoundCloud, YouTube Music, Яндекс Музыка, VK, Deezer) поверх yt-dlp и ffmpeg, с раскладкой по папкам
 и расширением для браузера.
 
-- `rust/` — основная версия (окно + консоль `vgd.exe`): описание, сборка и история версий — [rust/README.md](rust/README.md).
+- `rust/` — программа (окно + консоль `vgd.exe`): описание, сборка и история версий — [rust/README.md](rust/README.md).
 - `extension/` — расширение для Chrome / Edge / Яндекс.Браузера.
-- Корень (`ytdl_*.py`, `installer/`) — старая Python-версия, не развивается.
 
 Сборка: `powershell -ExecutionPolicy Bypass -File rust\build.ps1` (нужны Rust с MSVC; Inno Setup — для установщика).
