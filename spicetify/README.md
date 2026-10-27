@@ -1,5 +1,7 @@
 # Very Good Downloader — кнопки «скачать» в Spotify
 
+![Кнопки в Spotify](https://raw.githubusercontent.com/Vivegass/very-good-downloader/main/docs/spicetify.png)
+
 Расширение [Spicetify](https://spicetify.app) для программы [Very Good Downloader](https://github.com/Vivegass/very-good-downloader) (Windows).
 Добавляет в приложение Spotify кнопки, которые отправляют музыку в очередь программы:
 
