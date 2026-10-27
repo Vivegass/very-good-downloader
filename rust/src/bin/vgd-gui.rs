@@ -47,6 +47,10 @@ const I_FOLDER: char = '\u{E8B7}';
 const I_CLOSE: char = '\u{E711}';
 const I_RETRY: char = '\u{E72C}';
 const I_SUBS: char = '\u{E728}';
+const I_PAUSE: char = '\u{E769}';
+const I_PLAY: char = '\u{E768}';
+const I_UP: char = '\u{E70E}';
+const I_DOWN: char = '\u{E70D}';
 
 fn icons() -> FontFamily {
     FontFamily::Name("icons".into())
@@ -91,6 +95,7 @@ fn stage_name(s: &str) -> &'static str {
         "wait" => "ожидание",
         "cancel" => "отменено",
         "queued" => "в очереди",
+        "paused" => "на паузе",
         _ => "подготовка",
     }
 }
@@ -107,6 +112,7 @@ enum Page {
 enum State {
     Queued,
     Running,
+    Paused,
     Done,
     Error,
     Cancelled,
@@ -143,19 +149,31 @@ enum Event {
     YtdlpVersion(String),
     /// ссылки из браузера или второго запуска программы
     External(Vec<String>),
+    /// установка кнопок в Spotify закончилась: успех / текст ошибки
+    SpotifyDone(Result<(), String>),
+    /// вход в Яндекс: код и страница (Some) или вход закончился (None)
+    YandexCode(Option<(String, String)>),
 }
 
 /// Общее между окном и рабочим потоком.
 #[derive(Default)]
 struct Shared {
+    /// ждут загрузки, в порядке карточек (пересобирается из `App::jobs` в `sync_queue`)
     queue: VecDeque<(u64, String, JobOpts)>,
-    current: Option<(u64, CancelHandle)>,
+    /// что качается сейчас: основная нить и нить для небольшой музыки
+    current: Vec<(u64, CancelHandle)>,
     settings: Settings,
     stop_all: bool,
 }
 
 enum Action {
     Cancel(u64),
+    Pause(u64),
+    Resume(u64),
+    /// сдвинуть карточку вверх (-1) или вниз (+1)
+    Move(u64, i32),
+    /// открыть/закрыть настройки ссылки
+    EditOpts(u64),
     Remove(u64),
     Retry(u64),
     Reveal(String),
@@ -171,6 +189,16 @@ struct App {
     rx: Receiver<Event>,
     shared: Arc<Mutex<Shared>>,
     worker: Option<std::thread::JoinHandle<()>>,
+    /// вторая нить: небольшая музыка, пока основная занята длинной загрузкой
+    side_worker: Option<std::thread::JoinHandle<()>>,
+    /// загрузки, которые останавливаем ради паузы (а не отмены)
+    pausing: std::collections::HashSet<u64>,
+    /// карточка, у которой открыты свои настройки
+    edit_job: Option<u64>,
+    /// поле «название нового пресета»
+    preset_new: String,
+    /// вход в Яндекс идёт: код и страница для ввода
+    ya_code: Option<(String, String)>,
     log: Vec<String>,
     status: String,
     sort_plan: Option<Vec<(PathBuf, PathBuf)>>,
@@ -241,6 +269,18 @@ impl App {
                 ctx.request_repaint();
             });
         }
+        // Spotify обновился и кнопки «скачать» пропали — вернуть (только пока Spotify закрыт).
+        if s.spotify_app {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let ltx = tx.clone();
+                if let Some(Err(e)) = vgd::spotify_app::repair(&|m| {
+                    let _ = ltx.send(Event::Log(m));
+                }) {
+                    let _ = tx.send(Event::Log(format!("Ошибка: Spotify: {e}")));
+                }
+            });
+        }
         let tray = make_tray(&cc.egui_ctx);
         // «--page=settings» / «--page=log» — открыть сразу нужную страницу.
         // «--page=extension» — из установщика: настройки с выбором браузера для расширения.
@@ -262,6 +302,11 @@ impl App {
             tx,
             rx,
             worker: None,
+            side_worker: None,
+            pausing: Default::default(),
+            edit_job: None,
+            preset_new: String::new(),
+            ya_code: None,
             log: Vec::new(),
             status: String::new(),
             sort_plan: None,
@@ -294,8 +339,9 @@ impl App {
         }
     }
 
+    /// Идёт загрузка (в любой из двух нитей).
     fn busy(&self) -> bool {
-        self.worker.as_ref().is_some_and(|w| !w.is_finished())
+        self.worker.as_ref().is_some_and(|w| !w.is_finished()) || self.side_worker.as_ref().is_some_and(|w| !w.is_finished())
     }
 
     fn add_log(&mut self, msg: String) {
@@ -354,7 +400,6 @@ impl App {
     fn enqueue(&mut self, url: String, opts: JobOpts, sub_url: Option<String>) {
         let id = self.next_id;
         self.next_id += 1;
-        self.shared.lock().unwrap().queue.push_back((id, url.clone(), opts.clone()));
         let title = match &sub_url {
             Some(_) => self.s.subscriptions.iter().find(|s| s.url == url).map(|s| s.name.clone()).filter(|n| !n.is_empty()),
             None => None,
@@ -377,6 +422,17 @@ impl App {
             opts,
             sub_url,
         });
+        self.sync_queue();
+    }
+
+    /// Очередь для рабочих нитей — ссылки «в очереди» в порядке карточек.
+    fn sync_queue(&mut self) {
+        let q: VecDeque<_> =
+            self.jobs.iter().filter(|j| j.state == State::Queued).map(|j| (j.id, j.url.clone(), j.opts.clone())).collect();
+        self.shared.lock().unwrap().queue = q;
+        if self.status == "все загрузки завершены" {
+            self.status.clear();
+        }
     }
 
     /// Проверить подписки: новые видео/треки; при первой проверке — только запомнить, что уже есть.
@@ -387,7 +443,7 @@ impl App {
                 continue;
             }
             // Уже в очереди — не дублируем.
-            if self.jobs.iter().any(|j| j.sub_url.as_deref() == Some(&sub.url) && matches!(j.state, State::Queued | State::Running)) {
+            if self.jobs.iter().any(|j| j.sub_url.as_deref() == Some(&sub.url) && matches!(j.state, State::Queued | State::Running | State::Paused)) {
                 continue;
             }
             let opts = JobOpts { audio_only: sub.audio_only, max_age_days: sub.max_age_days, seed_only: !sub.seeded, ..Default::default() };
@@ -398,34 +454,90 @@ impl App {
     }
 
     fn start_worker(&mut self, ctx: &egui::Context) {
-        if self.busy() {
-            return;
+        if !self.worker.as_ref().is_some_and(|w| !w.is_finished()) {
+            self.shared.lock().unwrap().stop_all = false;
+            let (shared, tx, ctx) = (self.shared.clone(), self.tx.clone(), ctx.clone());
+            self.worker = Some(std::thread::spawn(move || work(shared, tx, ctx, false)));
         }
-        self.shared.lock().unwrap().stop_all = false;
-        let shared = self.shared.clone();
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-        self.worker = Some(std::thread::spawn(move || work(shared, tx, ctx)));
+        // Небольшую музыку качаем рядом с основной нитью, не дожидаясь очереди.
+        let side_busy = self.side_worker.as_ref().is_some_and(|w| !w.is_finished());
+        let small = self.shared.lock().unwrap().queue.iter().any(|(_, u, _)| vgd::music::is_small_music(u));
+        if !side_busy && small {
+            let (shared, tx, ctx) = (self.shared.clone(), self.tx.clone(), ctx.clone());
+            self.side_worker = Some(std::thread::spawn(move || work(shared, tx, ctx, true)));
+        }
+    }
+
+    fn cancel_running(&self, id: u64) -> bool {
+        let c = self.shared.lock().unwrap().current.iter().find(|(cid, _)| *cid == id).map(|(_, c)| c.clone());
+        match c {
+            Some(c) => {
+                std::thread::spawn(move || c.cancel());
+                true
+            }
+            None => false,
+        }
     }
 
     fn apply(&mut self, a: Action) {
         match a {
             Action::Cancel(id) => {
-                let mut sh = self.shared.lock().unwrap();
-                let before = sh.queue.len();
-                sh.queue.retain(|(qid, _, _)| *qid != id);
-                if sh.queue.len() != before {
-                    drop(sh);
-                    if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
+                let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) else { return };
+                match j.state {
+                    State::Queued | State::Paused => {
                         j.state = State::Cancelled;
                         j.stage = "cancel".into();
+                        j.message.clear();
+                        self.sync_queue();
                     }
-                } else if let Some((cid, c)) = sh.current.clone() {
-                    if cid == id {
-                        self.status = "отменяю текущую загрузку…".into();
-                        std::thread::spawn(move || c.cancel());
+                    State::Running => {
+                        self.pausing.remove(&id);
+                        if self.cancel_running(id) {
+                            self.status = "отменяю загрузку…".into();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Пауза: ссылка остаётся на своём месте, «продолжить» докачает с того же места
+            // (скачанное пропустится по архиву, недокачанный файл yt-dlp продолжит).
+            Action::Pause(id) => {
+                let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) else { return };
+                match j.state {
+                    State::Queued => {
+                        j.state = State::Paused;
+                        j.stage = "paused".into();
+                        self.sync_queue();
+                    }
+                    State::Running => {
+                        j.message = "ставлю на паузу…".into();
+                        self.pausing.insert(id);
+                        self.cancel_running(id);
+                    }
+                    _ => {}
+                }
+            }
+            Action::Resume(id) => {
+                if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id && j.state == State::Paused) {
+                    j.state = State::Queued;
+                    j.stage = "queued".into();
+                    j.message.clear();
+                }
+                self.sync_queue();
+                let ctx = self.ctx.clone();
+                self.start_worker(&ctx);
+            }
+            Action::Move(id, dir) => {
+                if let Some(i) = self.jobs.iter().position(|j| j.id == id) {
+                    let k = i as i64 + dir as i64;
+                    if k >= 0 && (k as usize) < self.jobs.len() {
+                        self.jobs.swap(i, k as usize);
+                        self.sync_queue();
                     }
                 }
+            }
+            Action::EditOpts(id) => {
+                self.edit_job = if self.edit_job == Some(id) { None } else { Some(id) };
             }
             Action::Remove(id) => self.jobs.retain(|j| j.id != id),
             // Повторить отменённую или упавшую загрузку: скачанное раньше пропустится по архиву.
@@ -438,8 +550,8 @@ impl App {
                     j.message.clear();
                     j.percent = 0.0;
                     j.files.clear();
-                    self.shared.lock().unwrap().queue.push_back((id, j.url.clone(), j.opts.clone()));
                 }
+                self.sync_queue();
                 let ctx = self.ctx.clone();
                 self.start_worker(&ctx);
             }
@@ -448,7 +560,7 @@ impl App {
     }
 
     fn clear_done(&mut self) {
-        self.jobs.retain(|j| matches!(j.state, State::Queued | State::Running));
+        self.jobs.retain(|j| matches!(j.state, State::Queued | State::Running | State::Paused));
     }
 
     fn update_ytdlp(&mut self, ctx: &egui::Context) {
@@ -603,11 +715,14 @@ impl App {
                 }
                 Event::Log(m) => self.add_log(m),
                 Event::Finish(id, state, files, err) => {
+                    // Остановили ради паузы — карточка «на паузе», а не «отменено».
+                    let state = if self.pausing.remove(&id) && state == State::Cancelled { State::Paused } else { state };
                     if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
                         j.state = state;
                         j.stage = match state {
                             State::Done => "done",
                             State::Error => "error",
+                            State::Paused => "paused",
                             _ => "cancel",
                         }
                         .into();
@@ -650,8 +765,39 @@ impl App {
                     }
                 }
                 Event::Idle => {
-                    if !self.jobs.iter().any(|j| j.state == State::Error) && !self.jobs.is_empty() {
+                    let active = self.jobs.iter().any(|j| matches!(j.state, State::Queued | State::Running));
+                    if !active && !self.jobs.iter().any(|j| j.state == State::Error) && !self.jobs.is_empty() {
                         self.status = "все загрузки завершены".into();
+                    }
+                    if !active && self.status.starts_with("отменяю") {
+                        self.status.clear();
+                    }
+                    // Нить закончила, а в очереди что-то появилось, пока она останавливалась, — запустить снова.
+                    if self.jobs.iter().any(|j| j.state == State::Queued) {
+                        self.start_worker(ctx);
+                    }
+                }
+                Event::YandexCode(c) => {
+                    if c.is_none() {
+                        self.side_task = false;
+                    }
+                    self.ya_code = c;
+                }
+                Event::SpotifyDone(r) => {
+                    self.side_task = false;
+                    match r {
+                        Ok(()) => {
+                            self.s.spotify_app = true;
+                            self.save_settings();
+                            if let Ok(exe) = std::env::current_exe() {
+                                vgd::spotify_app::set_autorepair(true, &exe);
+                            }
+                            self.status = "кнопки «скачать» в spotify готовы".into();
+                        }
+                        Err(e) => {
+                            self.add_log(format!("Ошибка: Spotify: {e}"));
+                            self.status = format!("spotify: {e}");
+                        }
                     }
                 }
                 Event::Status(s) => {
@@ -844,13 +990,23 @@ impl App {
                 }
                 // Параметры для следующих ссылок: фрагмент «с / до» и «только звук».
                 ui.horizontal(|ui| {
-                    let label = if self.next_opts.is_variant() {
+                    let custom = self.next_opts.is_variant() || !self.next_opts.preset.is_empty() || !self.next_opts.over.is_empty();
+                    let label = if custom {
                         let mut parts = Vec::new();
+                        if !self.next_opts.preset.is_empty() {
+                            parts.push(format!("пресет «{}»", self.next_opts.preset));
+                        }
+                        if !self.next_opts.over.is_empty() {
+                            parts.push("свои настройки".into());
+                        }
                         if self.next_opts.has_section() {
                             parts.push(format!("фрагмент {}–{}", self.next_opts.from.trim().if_empty("начало"), self.next_opts.to.trim().if_empty("конец")));
                         }
                         if self.next_opts.audio_only {
                             parts.push("только звук".into());
+                        }
+                        if self.next_opts.split_tracks {
+                            parts.push("микс → треки".into());
                         }
                         format!("параметры: {}", parts.join(" · "))
                     } else {
@@ -859,7 +1015,7 @@ impl App {
                     if link(ui, &label).clicked() {
                         self.show_opts = !self.show_opts;
                     }
-                    if self.next_opts.is_variant() && link(ui, "сбросить").clicked() {
+                    if custom && link(ui, "сбросить").clicked() {
                         self.next_opts = JobOpts::default();
                     }
                 });
@@ -875,7 +1031,13 @@ impl App {
                         row(ui, "только звук", "для видео — сохранить только звук (формат как в «музыка»).", |ui| {
                             toggle(ui, &mut self.next_opts.audio_only);
                         });
+                        divider(ui);
+                        row(ui, "микс → отдельные треки", "микс или альбом одним видео режется на треки: по главам youtube, а если их нет — по таймкодам в описании или в закреплённом комментарии. треки — в «музыка\\<название видео>», формат как в настройках музыки, теги: альбом — название видео, номер, название трека, обложка.", |ui| {
+                            toggle(ui, &mut self.next_opts.split_tracks);
+                        });
                     });
+                    ui.add_space(4.0);
+                    opts_editor(ui, &self.s, &mut self.next_opts, music_mode, true);
                     ui.add_space(4.0);
                 }
                 // Папка загрузок (щелчок — недавние папки и «другая папка…») и кратко о настройках (щелчок — настройки).
@@ -961,9 +1123,22 @@ impl App {
                     });
                 }
                 let mut actions = Vec::new();
-                for j in &self.jobs {
-                    job_card(ui, j, &mut actions);
+                let n = self.jobs.len();
+                let mut opts_changed = false;
+                for i in 0..n {
+                    job_card(ui, &self.jobs[i], i == 0, i + 1 == n, &mut actions);
+                    let j = &mut self.jobs[i];
+                    if self.edit_job == Some(j.id) && matches!(j.state, State::Queued | State::Paused) {
+                        ui.add_space(2.0);
+                        let music = vgd::music::is_music_url(&j.url);
+                        if opts_editor(ui, &self.s, &mut j.opts, music, false) {
+                            opts_changed = true;
+                        }
+                    }
                     ui.add_space(6.0);
+                }
+                if opts_changed {
+                    self.sync_queue();
                 }
                 for a in actions {
                     self.apply(a);
@@ -1016,6 +1191,10 @@ impl App {
 
                 if self.group(ui, "расширение для браузера") || self.ext_wizard {
                     self.ui_extension(ui);
+                }
+
+                if self.group(ui, "приложение spotify") {
+                    self.ui_spotify_app(ui);
                 }
 
                 if self.group(ui, "сохранение") {
@@ -1086,6 +1265,12 @@ impl App {
                         ];
                         segmented(ui, &mut self.s.edit, &opts);
                     });
+                    if self.s.edit != "none" {
+                        divider(ui);
+                        row(ui, "вместо оригинала", "видео сразу сохраняется в выбранном формате (h.264 mp4 или prores mov), оригинал mkv не остаётся. выключено — оригинал + копия «…_edit» рядом.", |ui| {
+                            toggle(ui, &mut self.s.edit_replace);
+                        });
+                    }
                     divider(ui);
                     row(ui, "обложка .jpg", "картинка-обложка рядом с видео.", |ui| {
                         toggle(ui, &mut self.s.thumbnail);
@@ -1097,6 +1282,10 @@ impl App {
                     divider(ui);
                     row(ui, "разбить по главам", "если у видео есть главы, рядом появится папка «… — главы» с отдельным файлом на каждую.", |ui| {
                         toggle(ui, &mut self.s.split_chapters);
+                    });
+                    divider(ui);
+                    row(ui, "файл «откуда скачано»", "в папке со скачанным появляется «_откуда скачано.txt»: дата, имя файла, сайт и ссылка, откуда он взят. для музыки — и пометка «замена», если трек нашёлся не там, где его просили.", |ui| {
+                        toggle(ui, &mut self.s.source_log);
                     });
                     divider(ui);
                     row(ui, "субтитры", "языки через запятую. автосубтитры берутся только на языке оригинала: автоперевод youtube почти всегда отвечает ошибкой 429.", |ui| {
@@ -1138,12 +1327,132 @@ impl App {
                         toggle(ui, &mut self.s.lyrics);
                     });
                     divider(ui);
+                    row(ui, "искать замену недоступным трекам", "трек есть в vk, soundcloud или youtube music, но не скачивается (заблокирован, удалён, нет прав) — программа ищет его на youtube music, soundcloud, audius и youtube. выключено — такой трек пропускается и попадает в журнал. для spotify, apple и яндекса поиск работает всегда: их звук скачать нельзя.", |ui| {
+                        let mut on = !self.s.music_no_replace;
+                        if toggle(ui, &mut on) {
+                            self.s.music_no_replace = !on;
+                        }
+                    });
+                    if !self.s.music_no_replace {
+                        divider(ui);
+                        row(ui, "замены — в отдельную папку", "треки, найденные не там, где их просили, кладутся в подпапку «_из других мест» внутри плейлиста.", |ui| {
+                            toggle(ui, &mut self.s.music_replace_dir);
+                        });
+                    }
+                    divider(ui);
+                    row(ui, "сверять замену по звуку", "найденный на youtube, soundcloud или audius трек сравнивается по звуку с 30-секундным отрывком оригинала с deezer. не совпал (кавер, ремикс, sped up, другая песня с тем же названием) — программа ищет дальше. если отрывка на deezer нет, проверка пропускается.", |ui| {
+                        toggle(ui, &mut self.s.music_verify);
+                    });
+                    divider(ui);
+                    row(ui, "искать в vk (ваш аккаунт)", "замена треку ищется сначала в vk — от вашего аккаунта, как в самом vk: часто mp3 320 и редкие треки. программа открывает vk.com в невидимом окне (движок edge webview2); войти нужно один раз кнопкой «войти в vk» — пароль вводится на странице vk, программа его не видит. найденное сверяется по звуку, как и с других сайтов.", |ui| {
+                        let logged = vgd::vk_web::logged_in();
+                        toggle(ui, &mut self.s.vk_search);
+                        if small_pill(ui, if logged { "войти заново" } else { "войти в vk" }).clicked() {
+                            if let Err(e) = vgd::vk_web::open_login() {
+                                self.status = format!("vk: {e}");
+                            }
+                        }
+                        ui.label(RichText::new(if logged { "вход выполнен" } else { "нет входа" }).size(11.5).color(if logged { OK } else { MUTED }));
+                    });
+                    divider(ui);
+                    row(ui, "яндекс музыка (ваш аккаунт)", "вход кодом: программа покажет код и откроет страницу яндекса — подтвердите вход там (пароль программа не видит). с подпиской плюс треки яндекса качаются прямо с яндекса (flac, если есть, иначе mp3 320 / aac), а для spotify, apple и других яндекс ищется сразу после vk. без подписки яндекс отдаёт только отрывки — тогда трек ищется на других сайтах. зашифрованные файлы яндекса программа не берёт.", |ui| {
+                        let logged = vgd::yandex_acc::logged_in();
+                        toggle(ui, &mut self.s.yandex_acc);
+                        if logged {
+                            if small_pill(ui, "выйти").clicked() {
+                                vgd::yandex_acc::logout();
+                            }
+                        } else if small_pill_enabled(ui, "войти в яндекс", !self.side_task).clicked() && !self.side_task {
+                            self.side_task = true;
+                            let (tx, ctx) = (self.tx.clone(), ui.ctx().clone());
+                            std::thread::spawn(move || {
+                                let stx = tx.clone();
+                                let sctx = ctx.clone();
+                                let r = vgd::yandex_acc::login(&|code, url| {
+                                    let _ = stx.send(Event::YandexCode(Some((code.to_string(), url.to_string()))));
+                                    let _ = stx.send(Event::Log(format!("Вход в Яндекс Музыку: код {code} — {url}")));
+                                    vgd::appinfo::open_url(url);
+                                    sctx.request_repaint();
+                                });
+                                let _ = tx.send(Event::YandexCode(None));
+                                let _ = tx.send(Event::Status(match r {
+                                    Ok(()) => "яндекс музыка: вход выполнен".into(),
+                                    Err(e) => format!("яндекс музыка: {e}"),
+                                }));
+                                ctx.request_repaint();
+                            });
+                        }
+                        ui.label(RichText::new(if logged { "вход выполнен" } else { "нет входа" }).size(11.5).color(if logged { OK } else { MUTED }));
+                    });
+                    // Идёт вход: код крупно — его вводят на странице Яндекса.
+                    if let Some((code, url)) = self.ya_code.clone() {
+                        egui::Frame::new().fill(SURFACE_HI).corner_radius(10).inner_margin(Margin::symmetric(12, 10)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(RichText::new("введите этот код на странице яндекса — латиницей (английская раскладка):").size(12.0).color(MUTED));
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&code).size(26.0).color(TEXT).strong());
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if small_pill(ui, "открыть страницу").clicked() {
+                                        vgd::appinfo::open_url(&url);
+                                    }
+                                    if small_pill(ui, "копировать").clicked() {
+                                        if let Ok(mut c) = arboard::Clipboard::new() {
+                                            let _ = c.set_text(code.clone());
+                                        }
+                                    }
+                                });
+                            });
+                            ui.label(RichText::new("после подтверждения программа заметит вход сама.").size(11.0).color(FAINT));
+                        });
+                    }
+                    divider(ui);
+                    row(ui, "ключ song.link (необязательно)", "song.link (odesli) по треку spotify, apple, яндекса или deezer даёт точные ссылки на тот же трек на youtube music, soundcloud и youtube — без поиска по названию. с осени 2026 их api работает только с ключом (запрос — на odesli.co). без ключа программа просто ищет как обычно.", |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut self.s.odesli_key).password(true).hint_text("ключ").desired_width(180.0));
+                    });
+                    divider(ui);
                     row(ui, "ключ spotify (необязательно)", "проще всего большие плейлисты качать кнопкой расширения «скачать плейлист» на странице spotify — ключ не нужен. ключ — запасной путь: developer.spotify.com → dashboard → create app; в поле redirect uri впишите https://example.com/callback (адрес не используется); галочка web api → save → settings → скопируйте client id и client secret сюда.", |ui| {
                         ui.add(egui::TextEdit::singleline(&mut self.s.spotify_secret).password(true).hint_text("client secret").desired_width(150.0));
                         ui.add(egui::TextEdit::singleline(&mut self.s.spotify_id).hint_text("client id").desired_width(150.0));
                     });
                     divider(ui);
                     row(ui, "spotify и vk из браузера", "spotify отдаёт программе только 100 треков, а vk — ничего без входа. откройте плейлист в браузере и нажмите кнопку расширения «скачать плейлист» — весь список уйдёт в программу. звук vk берётся прямо из vk; звук spotify — с youtube music, soundcloud или youtube. так же заменяются заблокированные треки.", |_ui| {});
+                });
+                }
+
+                if self.group(ui, "пресеты") {
+                card(ui, |ui| {
+                    let mut remove = None;
+                    let mut update = None;
+                    for (i, p) in self.s.presets.iter().enumerate() {
+                        row(ui, &p.name.to_lowercase(), &preset_summary(&p.values), |ui| {
+                            if icon_button(ui, I_CLOSE, "удалить пресет").clicked() {
+                                remove = Some(i);
+                            }
+                            if small_pill(ui, "взять текущие").on_hover_text("записать в пресет текущие настройки программы").clicked() {
+                                update = Some(i);
+                            }
+                        });
+                        divider(ui);
+                    }
+                    if let Some(i) = update {
+                        self.s.presets[i].values = self.s.preset_values();
+                    }
+                    if let Some(i) = remove {
+                        self.s.presets.remove(i);
+                    }
+                    row(ui, "сохранить текущие как пресет", "пресет запоминает папку, качество, fps, копию для монтажа, формат музыки, субтитры, обложку, sponsorblock, главы, раскладку по папкам и тексты песен. выбрать его можно в «параметры ▾» на главной или кнопкой ⚙ у ссылки в очереди.", |ui| {
+                        let name = self.preset_new.trim().to_string();
+                        let ok = !name.is_empty();
+                        if small_pill_enabled(ui, "сохранить", ok).clicked() && ok {
+                            let values = self.s.preset_values();
+                            match self.s.presets.iter_mut().find(|p| p.name.eq_ignore_ascii_case(&name)) {
+                                Some(p) => p.values = values,
+                                None => self.s.presets.push(vgd::settings::Preset { name, values }),
+                            }
+                            self.preset_new.clear();
+                        }
+                        ui.add(egui::TextEdit::singleline(&mut self.preset_new).hint_text("название").desired_width(150.0));
+                    });
                 });
                 }
 
@@ -1157,7 +1466,7 @@ impl App {
                         toggle(ui, &mut self.s.notify_done);
                     });
                     divider(ui);
-                    row(ui, "сворачивать в трей", "свёрнутое окно прячется в значок у часов, загрузки продолжаются. щелчок по значку — открыть окно, правая кнопка — «выход».", |ui| {
+                    row(ui, "закрывать в трей", "крестик прячет окно в значок у часов — программа и загрузки продолжают работать, кнопки в браузере и spotify отправляют ссылки сразу. щелчок по значку — открыть окно, правая кнопка — «выход». кнопка «свернуть» сворачивает на панель задач как обычно.", |ui| {
                         toggle(ui, &mut self.s.tray);
                     });
                     divider(ui);
@@ -1377,6 +1686,60 @@ impl App {
                 self.install_extension(name, &exe, page);
             }
         }
+    }
+
+    /// Кнопки «скачать» прямо в приложении Spotify (расширение Spicetify).
+    fn ui_spotify_app(&mut self, ui: &mut egui::Ui) {
+        use vgd::spotify_app::Status;
+        // Проверка папок дешёвая, но не каждый кадр.
+        let now = ui.input(|i| i.time);
+        let id = egui::Id::unique("spotify-status");
+        let cached: Option<(f64, u8)> = ui.data(|d| d.get_temp(id));
+        let st = match cached {
+            Some((t, s)) if now - t < 3.0 => s,
+            _ => {
+                let s = vgd::spotify_app::status() as u8;
+                ui.data_mut(|d| d.insert_temp(id, (now, s)));
+                s
+            }
+        };
+        let st = [Status::NoSpotify, Status::Store, Status::Off, Status::On][st as usize];
+        card(ui, |ui| {
+            let (text, color) = match st {
+                Status::On => ("кнопки на месте", OK),
+                Status::Off if self.s.spotify_app => ("кнопки пропали (spotify обновился) — вернутся сами, когда spotify закрыт", WARN),
+                Status::Off => ("не установлено", MUTED),
+                Status::Store => ("spotify из microsoft store не поддерживается", ERR),
+                Status::NoSpotify => ("spotify для windows не найден", MUTED),
+            };
+            row(ui, "кнопки ↓ в приложении spotify", "в меню правой кнопки у трека, нескольких треков, плейлиста, альбома, исполнителя и «любимых треков»; кнопка рядом с большой play в шапке плейлиста и альбома; кнопка в плеере — текущий трек. плейлисты любой длины: список берётся внутри spotify. работает через spicetify (совместим с spotx): программа сама поставит или обновит его. после обновления spotify кнопки пропадают — программа возвращает их сама при запуске и при входе в windows, пока spotify закрыт.", |ui| {
+                ui.label(RichText::new(text).size(12.0).color(color));
+            });
+            divider(ui);
+            ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 38.0), Layout::left_to_right(Align::Center), |ui| {
+                let can = matches!(st, Status::On | Status::Off) && !self.side_task;
+                let label = if st == Status::On { "переустановить" } else { "установить в spotify" };
+                if small_pill_enabled(ui, label, can).clicked() && can {
+                    self.side_task = true;
+                    self.status = "ставлю кнопки в spotify (spotify перезапустится)…".into();
+                    let (tx, ctx) = (self.tx.clone(), ui.ctx().clone());
+                    std::thread::spawn(move || {
+                        let ltx = tx.clone();
+                        let r = vgd::spotify_app::install(true, &|m| {
+                            let _ = ltx.send(Event::Log(m));
+                        });
+                        let _ = tx.send(Event::SpotifyDone(r));
+                        ctx.request_repaint();
+                    });
+                }
+                if self.s.spotify_app && small_pill(ui, "не следить").on_hover_text("не возвращать кнопки после обновлений spotify").clicked() {
+                    self.s.spotify_app = false;
+                    if let Ok(exe) = std::env::current_exe() {
+                        vgd::spotify_app::set_autorepair(false, &exe);
+                    }
+                }
+            });
+        });
     }
 
     fn ui_extension(&mut self, ui: &mut egui::Ui) {
@@ -1632,7 +1995,7 @@ impl App {
                         let mut sh = self.shared.lock().unwrap();
                         sh.stop_all = true;
                         sh.queue.clear();
-                        if let Some((_, c)) = sh.current.clone() {
+                        for (_, c) in sh.current.clone() {
                             c.cancel();
                         }
                     }
@@ -1707,18 +2070,13 @@ impl eframe::App for App {
                     let mut sh = self.shared.lock().unwrap();
                     sh.stop_all = true;
                     sh.queue.clear();
-                    if let Some((_, c)) = sh.current.clone() {
+                    for (_, c) in sh.current.clone() {
                         c.cancel();
                     }
                 }
                 self.save_settings();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-        }
-        // Свернули окно — прячем его в трей (загрузки продолжаются).
-        if self.s.tray && !self.hidden && ctx.input(|i| i.viewport().minimized == Some(true)) {
-            self.hidden = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
         if self.hidden {
             self.handle_events(ctx);
@@ -1779,7 +2137,13 @@ impl eframe::App for App {
                 self.s.win_h = (r.height() * z).round();
             }
             self.save_settings();
-            if self.busy() && !self.exiting {
+            // Крестик при включённом трее — окно прячется к часам, программа и загрузки продолжают работать
+            // (как у Telegram, Discord). Совсем выйти — правой кнопкой по значку → «выход».
+            if self.s.tray && self._tray.is_some() && !self.exiting {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.hidden = true;
+            } else if self.busy() && !self.exiting {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.confirm_exit = true;
             }
@@ -2055,8 +2419,141 @@ fn nav_item(ui: &mut egui::Ui, icon: char, label: &str, selected: bool, badge: O
     resp
 }
 
-/// Карточка одной ссылки в очереди.
-fn job_card(ui: &mut egui::Ui, j: &Job, actions: &mut Vec<Action>) {
+/// Кратко о пресете: «1080p · до 24 fps · копия h.264 · mp3 320 · папка …».
+fn preset_summary(v: &serde_json::Map<String, serde_json::Value>) -> String {
+    let s = Settings::default().with_values(v);
+    let mut parts = vec![height_short(s.max_height).to_string()];
+    if s.max_fps > 0 {
+        parts.push(format!("до {} fps", s.max_fps));
+    }
+    if s.edit != "none" {
+        let f = if s.edit == "prores" { "prores" } else { "h.264" };
+        parts.push(if s.edit_replace { format!("сразу в {f}") } else { format!("копия {f}") });
+    }
+    parts.push(format!("музыка: {}", if s.music_format == "best" { "как есть" } else { s.music_format.as_str() }));
+    if s.subs {
+        parts.push(format!("субтитры {}", s.sub_langs));
+    }
+    if s.sponsorblock {
+        parts.push("sponsorblock".into());
+    }
+    if s.split_chapters {
+        parts.push("главы".into());
+    }
+    parts.push(format!("папка {}", s.out_dir));
+    parts.join(" · ")
+}
+
+/// Пресет и свои настройки для ссылки: выбранное значение, совпадающее с пресетом/общими, не запоминается.
+/// `next` — панель для следующих ссылок (без фрагмента и «только звук» — они выше).
+fn opts_editor(ui: &mut egui::Ui, s: &Settings, o: &mut JobOpts, music: bool, next: bool) -> bool {
+    let mut changed = false;
+    let base = s.for_job(&JobOpts { preset: o.preset.clone(), ..Default::default() });
+    let cur = s.for_job(o);
+    card(ui, |ui| {
+        if !s.presets.is_empty() {
+            row(ui, "пресет", "набор настроек, сохранённый в «настройки → пресеты». «обычные» — текущие настройки программы.", |ui| {
+                let mut opts = vec![(String::new(), "обычные".to_string())];
+                opts.extend(s.presets.iter().map(|p| (p.name.clone(), p.name.to_lowercase())));
+                let mut v = o.preset.clone();
+                if segmented(ui, &mut v, &opts) {
+                    o.preset = v;
+                    o.over.clear();
+                    changed = true;
+                }
+            });
+            divider(ui);
+        }
+        let set = |o: &mut JobOpts, key: &str, v: serde_json::Value, base_v: serde_json::Value| {
+            if v == base_v {
+                o.over.remove(key);
+            } else {
+                o.over.insert(key.to_string(), v);
+            }
+        };
+        if music {
+            row(ui, "формат музыки", "", |ui| {
+                let opts = vec![
+                    ("best".to_string(), "как есть".to_string()),
+                    ("mp3".to_string(), "mp3 320".to_string()),
+                    ("m4a".to_string(), "m4a".to_string()),
+                    ("flac".to_string(), "flac".to_string()),
+                ];
+                let mut v = cur.music_format.clone();
+                if segmented(ui, &mut v, &opts) {
+                    set(o, "music_format", v.into(), base.music_format.clone().into());
+                    changed = true;
+                }
+            });
+        } else {
+            row(ui, "качество", "", |ui| {
+                let opts: Vec<(u32, String)> = vgd::settings::HEIGHTS.iter().map(|h| (*h, height_short(*h).to_string())).collect();
+                let mut v = cur.max_height;
+                if segmented(ui, &mut v, &opts) {
+                    set(o, "max_height", v.into(), base.max_height.into());
+                    changed = true;
+                }
+            });
+            divider(ui);
+            row(ui, "макс. fps", "", |ui| {
+                let opts: Vec<(u32, String)> = vgd::settings::FPS_LIMITS.iter().map(|f| (*f, if *f == 0 { "макс".to_string() } else { f.to_string() })).collect();
+                let mut v = cur.max_fps;
+                if segmented(ui, &mut v, &opts) {
+                    set(o, "max_fps", v.into(), base.max_fps.into());
+                    changed = true;
+                }
+            });
+            divider(ui);
+            row(ui, "для монтажа", "", |ui| {
+                let mut r = cur.edit_replace;
+                if cur.edit != "none" {
+                    ui.label(RichText::new("вместо оригинала").size(11.5).color(MUTED));
+                    if toggle(ui, &mut r) {
+                        set(o, "edit_replace", r.into(), base.edit_replace.into());
+                        changed = true;
+                    }
+                }
+                let opts = vec![
+                    ("none".to_string(), "нет".to_string()),
+                    ("h264".to_string(), "h.264".to_string()),
+                    ("prores".to_string(), "prores".to_string()),
+                ];
+                let mut v = cur.edit.clone();
+                if segmented(ui, &mut v, &opts) {
+                    set(o, "edit", v.into(), base.edit.clone().into());
+                    changed = true;
+                }
+            });
+        }
+        divider(ui);
+        row(ui, "папка", "", |ui| {
+            if o.over.contains_key("out_dir") && small_pill(ui, "как обычно").clicked() {
+                o.over.remove("out_dir");
+                changed = true;
+            }
+            if small_pill(ui, "другая…").clicked() {
+                if let Some(d) = rfd::FileDialog::new().set_directory(&cur.out_dir).pick_folder() {
+                    set(o, "out_dir", d.display().to_string().into(), base.out_dir.clone().into());
+                    changed = true;
+                }
+            }
+            let w = (ui.available_width() - 8.0).max(40.0);
+            ui.allocate_ui_with_layout(Vec2::new(w, 20.0), Layout::right_to_left(Align::Center), |ui| {
+                ui.add(egui::Label::new(RichText::new(short_dir(&cur.out_dir)).size(12.0).color(MUTED)).truncate()).on_hover_text(&cur.out_dir);
+            });
+        });
+        if next {
+            divider(ui);
+            ui.add_space(4.0);
+            ui.label(RichText::new("эти настройки — только для ссылок, добавленных сейчас; общие не меняются.").size(11.0).color(FAINT));
+            ui.add_space(4.0);
+        }
+    });
+    changed
+}
+
+/// Карточка одной ссылки в очереди. `first` / `last` — можно ли сдвинуть вверх / вниз.
+fn job_card(ui: &mut egui::Ui, j: &Job, first: bool, last: bool, actions: &mut Vec<Action>) {
     let resp = egui::Frame::new()
         .fill(SURFACE)
         .corner_radius(12)
@@ -2069,6 +2566,7 @@ fn job_card(ui: &mut egui::Ui, j: &Job, actions: &mut Vec<Action>) {
                     State::Error => (stage_name("error").to_string(), ERR),
                     State::Cancelled => (stage_name("cancel").to_string(), FAINT),
                     State::Queued => (stage_name("queued").to_string(), MUTED),
+                    State::Paused => (stage_name("paused").to_string(), WARN),
                     State::Running => {
                         let mut s = stage_name(&j.stage).to_string();
                         if !j.item.is_empty() {
@@ -2077,7 +2575,12 @@ fn job_card(ui: &mut egui::Ui, j: &Job, actions: &mut Vec<Action>) {
                         (s, if j.stage == "wait" { WARN } else { TEXT })
                     }
                 };
-                let right_w = 72.0 + text_size(ui, &status, &FontId::monospace(12.0)).x;
+                let buttons = match j.state {
+                    State::Queued | State::Paused => 5.0,
+                    State::Running => 2.0,
+                    _ => 3.0,
+                };
+                let right_w = 20.0 + 26.0 * buttons + text_size(ui, &status, &FontId::monospace(12.0)).x;
                 let title_w = (ui.available_width() - right_w).max(80.0);
                 ui.allocate_ui_with_layout(Vec2::new(title_w, 20.0), Layout::left_to_right(Align::Center), |ui| {
                     ui.set_width(title_w);
@@ -2087,9 +2590,32 @@ fn job_card(ui: &mut egui::Ui, j: &Job, actions: &mut Vec<Action>) {
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     match j.state {
-                        State::Queued | State::Running => {
+                        State::Queued | State::Running | State::Paused => {
                             if icon_button(ui, I_CLOSE, "отменить").clicked() {
                                 actions.push(Action::Cancel(j.id));
+                            }
+                            if j.state == State::Paused {
+                                if icon_button(ui, I_PLAY, "продолжить").clicked() {
+                                    actions.push(Action::Resume(j.id));
+                                }
+                            } else if icon_button(ui, I_PAUSE, "пауза — потом продолжится с того же места").clicked() {
+                                actions.push(Action::Pause(j.id));
+                            }
+                            if j.state != State::Running {
+                                let tip = if j.opts.preset.is_empty() && j.opts.over.is_empty() {
+                                    "свои настройки для этой ссылки"
+                                } else {
+                                    "свои настройки для этой ссылки (изменены)"
+                                };
+                                if icon_button(ui, I_SETTINGS, tip).clicked() {
+                                    actions.push(Action::EditOpts(j.id));
+                                }
+                                if !last && icon_button(ui, I_DOWN, "ниже в очереди").clicked() {
+                                    actions.push(Action::Move(j.id, 1));
+                                }
+                                if !first && icon_button(ui, I_UP, "выше в очереди").clicked() {
+                                    actions.push(Action::Move(j.id, -1));
+                                }
                             }
                         }
                         _ => {
@@ -2187,20 +2713,27 @@ fn info(title: &str, text: &str) {
     rfd::MessageDialog::new().set_title(title).set_description(text).set_level(rfd::MessageLevel::Info).show();
 }
 
-/// Рабочий поток: берёт ссылки из очереди по одной.
-fn work(shared: Arc<Mutex<Shared>>, tx: Sender<Event>, ctx: egui::Context) {
+/// Рабочий поток: берёт ссылки из очереди по одной. `side` — вторая нить: только небольшая музыка.
+fn work(shared: Arc<Mutex<Shared>>, tx: Sender<Event>, ctx: egui::Context, side: bool) {
     loop {
-        let (id, url, settings) = {
+        let (id, url, settings, opts) = {
             let mut sh = shared.lock().unwrap();
             if sh.stop_all {
                 break;
             }
-            match sh.queue.pop_front() {
-                Some((id, url, opts)) => (id, url, (sh.settings.clone(), opts)),
+            let pos = if side {
+                sh.queue.iter().position(|(_, u, _)| vgd::music::is_small_music(u))
+            } else if sh.queue.is_empty() {
+                None
+            } else {
+                Some(0)
+            };
+            match pos.and_then(|i| sh.queue.remove(i)) {
+                // Общие настройки → пресет → свои значения ссылки.
+                Some((id, url, opts)) => (id, url, sh.settings.for_job(&opts), opts),
                 None => break,
             }
         };
-        let (settings, opts) = settings;
         let (ptx, pctx, ltx, lctx) = (tx.clone(), ctx.clone(), tx.clone(), ctx.clone());
         let mut dl = Downloader::new(
             settings,
@@ -2214,7 +2747,7 @@ fn work(shared: Arc<Mutex<Shared>>, tx: Sender<Event>, ctx: egui::Context) {
             }),
         );
         dl.opts = opts;
-        shared.lock().unwrap().current = Some((id, dl.cancel_handle()));
+        shared.lock().unwrap().current.push((id, dl.cancel_handle()));
         let ev = match dl.run(&url) {
             Ok(files) => Event::Finish(id, State::Done, files, None),
             Err(DlError::Cancelled(m)) => {
@@ -2228,7 +2761,7 @@ fn work(shared: Arc<Mutex<Shared>>, tx: Sender<Event>, ctx: egui::Context) {
                 Event::Finish(id, State::Error, Vec::new(), Some(m))
             }
         };
-        shared.lock().unwrap().current = None;
+        shared.lock().unwrap().current.retain(|(cid, _)| *cid != id);
         let _ = tx.send(ev);
         ctx.request_repaint();
     }
@@ -2246,6 +2779,21 @@ fn setup_style(ctx: &egui::Context) {
         fonts.font_data.insert("mono".into(), Arc::new(FontData::from_owned(bytes)));
         for fam in [FontFamily::Proportional, FontFamily::Monospace] {
             fonts.families.entry(fam).or_default().insert(0, "mono".into());
+        }
+    }
+    // Запасные шрифты для названий на японском, китайском, корейском и значков вроде 【】★♪ —
+    // иначе вместо них квадратики. Берутся только если моноширинному не хватает знака.
+    for (key, files) in [
+        ("jp", &["YuGothR.ttc", "YuGothM.ttc", "msgothic.ttc"][..]),
+        ("zh", &["msyh.ttc", "simsun.ttc"][..]),
+        ("ko", &["malgun.ttf"][..]),
+        ("sym", &["seguisym.ttf"][..]),
+    ] {
+        if let Some(bytes) = files.iter().find_map(|f| std::fs::read(dir.join(f)).ok()) {
+            fonts.font_data.insert(key.into(), Arc::new(FontData::from_owned(bytes)));
+            for fam in [FontFamily::Proportional, FontFamily::Monospace] {
+                fonts.families.entry(fam).or_default().push(key.into());
+            }
         }
     }
     if let Ok(bytes) = std::fs::read(dir.join("segmdl2.ttf")) {
@@ -2312,6 +2860,24 @@ fn setup_style(ctx: &egui::Context) {
 
 fn main() -> eframe::Result {
     // Окно уже открыто — отдаём ему ссылки (или просто показываем его) и выходим.
+    // Окно входа в VK и невидимый браузер для поиска в VK (отдельные процессы, см. vk_web.rs).
+    if let Some(login) = std::env::args().find_map(|a| match a.as_str() {
+        "--vk-login" => Some(true),
+        "--vk-agent" => Some(false),
+        _ => None,
+    }) {
+        if let Err(e) = vgd::vk_web::run_window(login) {
+            eprintln!("{e}");
+        }
+        return Ok(());
+    }
+    // При входе в Windows: вернуть кнопки в Spotify, если он обновился, — без окна.
+    if std::env::args().any(|a| a == "--spotify-repair") {
+        if let Some(Err(e)) = vgd::spotify_app::repair(&|_| {}) {
+            eprintln!("{e}");
+        }
+        return Ok(());
+    }
     let urls = ipc::launch_urls(std::env::args().skip(1));
     if ipc::forward(&urls) {
         return Ok(());

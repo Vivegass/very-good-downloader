@@ -23,6 +23,7 @@ use crate::net::{current_proxy, is_network_error, is_proxy_error};
 use crate::settings::{edit_name, JobOpts, Settings};
 use crate::sort::Sorter;
 
+mod mix;
 mod music_dl;
 
 pub const MIN_FREE_GB: f64 = 15.0;
@@ -138,6 +139,8 @@ pub struct Downloader {
     pub opts: JobOpts,
     /// ссылка TikTok — предпочитаем H.264 (HEVC многие программы не открывают)
     tiktok: bool,
+    /// ссылка, которую просили скачать (для «_откуда скачано.txt»)
+    asked: String,
 }
 
 impl Downloader {
@@ -155,6 +158,7 @@ impl Downloader {
             limit: None,
             opts: JobOpts::default(),
             tiktok: false,
+            asked: String::new(),
         }
     }
 
@@ -196,7 +200,9 @@ impl Downloader {
         check_disk(&self.s.out_dir)?;
         self.wait_proxy()?;
         self.tiktok = url.contains("tiktok.com");
-        if crate::music::is_music_url(url) {
+        self.asked = url.to_string();
+        // «Микс → треки» — это видео YouTube, даже если ссылка с music.youtube.com.
+        if crate::music::is_music_url(url) && !self.opts.split_tracks {
             return self.run_music(url);
         }
 
@@ -504,6 +510,9 @@ impl Downloader {
                 }
             }
         }
+        if self.opts.split_tracks {
+            return self.mix_tracks(&info, e);
+        }
         if listing.is_playlist {
             // Для сортировки (название плейлиста ×4) и шаблона без сортировки.
             info["playlist_title"] = Value::String(listing.title.clone());
@@ -531,7 +540,7 @@ impl Downloader {
         };
 
         let parts = self.out().join(".parts");
-        let _ = std::fs::create_dir_all(&parts);
+        crate::appinfo::hidden_dir(&parts);
         let json_path = parts.join(format!("{}.vgd.info.json", if e.id.is_empty() { "video" } else { &e.id }));
         std::fs::write(&json_path, serde_json::to_vec(&info).unwrap_or_default())
             .map_err(|err| DlError::Failed(format!("Не удалось записать временный файл: {err}")))?;
@@ -684,12 +693,36 @@ impl Downloader {
         let mut path = path.to_path_buf();
         if self.opts.audio_only {
             self.results.push(path.to_string_lossy().into_owned());
+            self.note_video_source(info, &path);
             return check_disk(&self.s.out_dir);
         }
         let mut edit = self.s.edit.clone();
         let fps = probe(&path).fps;
         let max = self.s.max_fps as f64;
-        if max > 0.0 && fps > max + 0.01 {
+        let too_fast = max > 0.0 && fps > max + 0.01;
+        // «Вместо оригинала»: один проход ffmpeg — сразу нужный формат (и fps), MKV не остаётся.
+        let replace = self.s.edit_replace && edit != "none";
+        if replace {
+            let ext = if edit == "prores" { "mov" } else { "mp4" };
+            let new = path.with_extension(ext);
+            let tmp = if new == path { path.with_extension(format!("vgdtmp.{ext}")) } else { new.clone() };
+            let label = if too_fast { format!("{} -> {} fps", edit_name(&edit), self.s.max_fps) } else { String::new() };
+            match self.make_edit_copy(&path, info, &edit, too_fast.then_some(self.s.max_fps), Some(tmp.clone()), &label) {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&path);
+                    if tmp != new {
+                        let _ = std::fs::rename(&tmp, &new);
+                    }
+                    path = new;
+                }
+                Err(DlError::Cancelled(m)) => return Err(DlError::Cancelled(m)),
+                Err(DlError::Failed(m)) => {
+                    self.errors += 1;
+                    self.log(format!("Ошибка: перекодирование, оставил оригинал: {}", first_line(&m)));
+                }
+            }
+            edit = "none".into();
+        } else if too_fast {
             // Формата с нужной частотой на YouTube не было — пересчитываем. Результат сразу
             // H.264 MP4 (открывается в AE), поэтому отдельная H.264-копия уже не нужна.
             // Если MP4 уже есть (прошлый запуск прервался), перезаписываем — имя уникально по [id].
@@ -718,6 +751,7 @@ impl Downloader {
             }
         }
         self.results.push(path.to_string_lossy().into_owned());
+        self.note_video_source(info, &path);
         if self.s.subs {
             self.download_subs(info, json_path, &path)?;
         }
@@ -726,6 +760,13 @@ impl Downloader {
             self.results.push(copy.to_string_lossy().into_owned());
         }
         check_disk(&self.s.out_dir)
+    }
+
+    fn note_video_source(&self, info: &Value, path: &Path) {
+        if self.s.source_log {
+            let site = str_of(info, &["extractor_key", "extractor"]).if_empty("сайт");
+            note_source(path, &site, &str_of(info, &["webpage_url", "original_url"]), &self.asked);
+        }
     }
 
     // ---------- субтитры ----------
@@ -1227,9 +1268,55 @@ fn read_archive(out: &Path) -> HashSet<String> {
 }
 
 fn append_archive(out: &Path, key: &str) {
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(out.join(ARCHIVE_NAME)) {
-        let _ = writeln!(f, "{key}");
+    crate::appinfo::append_hidden(&out.join(ARCHIVE_NAME), key);
+}
+
+pub const SOURCE_LOG: &str = "_откуда скачано.txt";
+
+/// Строка в «_откуда скачано.txt» в папке файла: когда, что, откуда взято, по какой ссылке.
+fn note_source(file: &Path, from: &str, url: &str, asked: &str) {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock();
+    let Some(dir) = file.parent() else { return };
+    let log = dir.join(SOURCE_LOG);
+    let new = !log.exists();
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) else { return };
+    if new {
+        let _ = writeln!(f, "\u{feff}Дата | Файл | Откуда | Ссылка | Что просили скачать");
     }
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let asked = if asked == url { "" } else { asked };
+    let _ = writeln!(f, "{} | {name} | {from} | {url} | {asked}", local_stamp());
+}
+
+/// «2026-10-27 14:05» по местному времени.
+#[cfg(windows)]
+fn local_stamp() -> String {
+    #[repr(C)]
+    #[derive(Default)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        dow: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        ms: u16,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLocalTime(t: *mut SystemTime);
+    }
+    let mut t = SystemTime::default();
+    unsafe { GetLocalTime(&mut t) };
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute)
+}
+
+#[cfg(not(windows))]
+fn local_stamp() -> String {
+    let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!("unix {s}")
 }
 
 /// Файлы «<stem>.<язык>.<ext>» рядом с видео.

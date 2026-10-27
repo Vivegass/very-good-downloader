@@ -120,3 +120,83 @@ Inno Setup 6, делает `release\VeryGoodDownloader-Setup-<версия>.exe`
 - Нет ссылки (трек заблокирован, нет прав) или она протухла, пока ждала в очереди, — замена ищется как раньше.
 - Проверено: расшифровка ссылок (тест на круговое кодирование), загрузка зашифрованного HLS-потока тем же
   yt-dlp и теми же ключами, `cargo test`. **Не проверено на живой странице VK** — нужен вход в аккаунт.
+
+## 1.10
+
+- Расширение для Firefox (подпись Mozilla, `rust/firefox.ps1`), установщик предлагает поставить расширение.
+- Редактор категорий в окне вместо ручной правки `topics.json`, смена папки на главном экране,
+  сворачивание групп настроек, отключаемая нумерация треков.
+
+## 1.11
+
+- **Очередь** (`vgd-gui.rs`): состояние `Paused`; пауза = отмена текущего процесса с пометкой в `App::pausing`,
+  «продолжить» ставит ссылку обратно — скачанное пропускается по архиву, недокачанный `.part` yt-dlp продолжает.
+  Порядок — стрелки ↑↓; очередь рабочих нитей (`Shared::queue`) пересобирается из карточек в `sync_queue`.
+  Две нити: основная и `side` — берёт только небольшую музыку (`music::is_small_music`: трек, альбом,
+  список из браузера до 20 треков), пока основная занята.
+- **Пресеты** (`Settings::presets`, поля из `PRESET_KEYS`) и свои настройки ссылки (`JobOpts::preset`, `JobOpts::over`);
+  настройки для загрузки — `Settings::for_job`: общие → пресет → свои. Консоль: `--preset <название>`.
+- **Микс → треки** (`downloader/mix.rs`, `JobOpts::split_tracks`, консоль `--split-tracks`): главы из `yt-dlp -j`,
+  иначе таймкоды в описании (`parse_timestamps`), иначе в комментариях (закреплённый — первым).
+  Звук качается целиком один раз, ffmpeg режет: «как есть» — без перекодирования (opus/m4a), иначе mp3/m4a/flac;
+  теги (альбом = название видео, номер, «Исполнитель - Название» из главы), обложка внутри и `cover.jpg`, `.m3u8`.
+- **Проверка по звуку** (`fingerprint.rs`, `Settings::music_verify`, консоль `--no-verify`): отрывок 30 с с Deezer
+  (`music::deezer_preview`) сравнивается с найденной заменой — корреляция лог-спектрограмм (24 полосы 200–4000 Гц)
+  в лучшем сдвиге. Проверено: тот же трек 94%, sped up 6%, другая песня 13%; порог `SAME_MIN` = 50%.
+  Не совпало — файл удаляется, поиск идёт дальше.
+- Музыка: «искать замену недоступным трекам» (`music_no_replace`, `--no-substitutes`) и «замены — в отдельную папку»
+  (`music_replace_dir`, подпапка `_из других мест`) — только для треков, у которых есть свой звук (VK, SoundCloud,
+  YouTube Music); для Spotify/Apple/Яндекса поиск — единственный путь.
+- `_откуда скачано.txt` (`note_source`, настройка `source_log`): дата, файл, сайт, ссылка, что просили скачать.
+- «Вместо оригинала» (`edit_replace`, консоль `--edit-only`): один проход ffmpeg сразу в H.264/ProRes (с пределом fps),
+  MKV удаляется.
+- Окно: запасные шрифты (Yu Gothic, Microsoft YaHei, Malgun Gothic, Segoe UI Symbol) — японские, китайские и корейские
+  названия и знаки вроде 【】 больше не квадратики; «все загрузки завершены» не висит, пока очередь идёт.
+
+## Приложение Spotify (1.11)
+
+- `spicetify/vgd.js` — расширение Spicetify (вшито в программу, `spotify_app::EXTENSION_JS`). Меню правой кнопки
+  (`Spicetify.ContextMenu`), кнопка в шапке (`action-bar-row`), кнопка в плеере (`Spicetify.Playbar.Button`).
+  Списки — внутри клиента: плейлист `GraphQL fetchPlaylistContents` по 50 → `Platform.PlaylistAPI.getContents` →
+  Web API через `CosmosAsync`; «Любимые» — `LibraryAPI.getTracks` → `/v1/me/tracks`; альбом — Web API; исполнитель —
+  ссылкой (дискографию собирает программа). Отправка — `POST /add` со списком (`service: "Spotify"`, ключи
+  `spotify:<id>` как у ссылок — архив общий). Программа закрыта — `vgd://add` и ожидание `/ping`.
+- `ipc.rs`: Origin `https://xpui.app.spotify.com` разрешён, OPTIONS и ответы — с заголовками CORS (тест `spotify_cors`).
+- `spotify_app.rs`: установка — свежий Spicetify с GitHub (zip → `%LOCALAPPDATA%\spicetify`, распаковка `System32\tar.exe`:
+  GNU tar из Git считает «C:» сетевым адресом), `vgd.js` в `%APPDATA%\spicetify\Extensions`, `config spotify_path/prefs_path/
+  extensions`, `backup apply` (или `apply`, если уже применён). Чужая резервная копия (другая папка Spotify или Spotify
+  обновился) откладывается в `Backup-<версия>`, запись о ней в `config-xpui.ini` сбрасывается.
+- «Не слетает»: признак — `Apps\xpui.spa` вернулся (Spotify обновился). Проверка при запуске окна и при входе в Windows
+  (`HKCU\…\Run\VeryGoodDownloader-Spotify` → `Very Good Downloader.exe --spotify-repair`, без окна); чинит только пока
+  Spotify закрыт (`apply --no-restart`).
+- Подсмотрено у grademach/spotify-downloader: постраничный `fetchPlaylistContents` и данные текущего трека из
+  `Player.data.item`. abbas-rz/Spicetify-Spotify-Downloader — перехват родной кнопки Download + spotDL через свой
+  Python-сервер (у нас сервер — сама программа, ставить ничего не нужно).
+
+## Поиск в VK от аккаунта пользователя (1.11)
+
+- `vk_web.rs` + `vk_agent.js`: «невидимый браузер» — тот же exe окна в режиме `--vk-agent` (tao + wry, WebView2)
+  открывает vk.com/audio скрыто; папка данных `%APPDATA%\VeryGoodDownloader\webview2` общая с окном входа
+  `--vk-login` (пользователь входит сам на vk.com, пароль программе не виден). Связь — JSON-строки: stdin `{rid,q,count}`,
+  stdout `{rid,items|error}` и `{type:"state",logged,api}`. В странице — `vkApi.api("audio.search")` и расшифровка
+  `audio_api_unavailable` (код из extension/vk-main.js). Процесс запускается при первом поиске и живёт, пока жива программа
+  (закрыли stdin — вышел); неудачный запуск (нет входа) запоминается на 5 минут.
+- Настройка `vk_search`: VK — первым в поиске замены (кроме треков, которые и так из VK); проверка по звуку — как у всех.
+- Проверено: «Shiro SAGISU — MISATO» (не было на YouTube Music/SoundCloud/Audius) — взят с VK, звук совпал на 96%.
+- Музыка: архив скачанного — свой у каждой папки; трек, уже лежащий в другой папке «Музыка», копируется, а не качается.
+- Окно: крестик при включённом трее прячет программу к часам; «свернуть» — как обычно.
+
+## Яндекс Музыка от аккаунта и song.link (1.11)
+
+- `yandex_acc.rs` (по образцу MarshalX/yandex-music-api): вход OAuth Device Flow (`oauth.yandex.ru/device/code` →
+  пользователь вводит код на ya.ru/device → `/token`), токен в `%APPDATA%\VeryGoodDownloader\yandex_token.json`.
+  Файл — `get-file-info` с подписью HMAC-SHA256 (ключ и `X-Yandex-Music-Client` десктопного приложения), только
+  `transports=raw`; `encraw` (зашифрованный) не берём и не расшифровываем. «как есть»/flac → `quality=lossless`, иначе `hq`.
+  Консоль: `vgd yandex`. Настройка `yandex_acc`.
+- Трек Яндекса — сначала прямо с Яндекса; для Spotify/Apple/… Яндекс ищется после VK (`/search?type=track`).
+  Списки Яндекса тоже читаются с токеном: без него API отвечает «Unavailable For Legal Reasons» (VPN/страна).
+- Проверено: Daft Punk — Harder, Better, Faster, Stronger с Яндекса, aac-mp4, полный трек 3:46.
+- song.link (Odesli): `music::odesli` — точные ссылки на тот же трек (YouTube Music → SoundCloud → YouTube) перед поиском.
+  С осени 2026 открытый API отвечает `PUBLIC_API_ACCESS_DEPRECATED` — работает только с ключом (`odesli_key`);
+  без ключа или после отказа не вызывается.
+- Не делаем: расшифровку `encraw`, торренты/Soulseek (Jackett, Gazelle, slskd) — раздача чужой музыки.

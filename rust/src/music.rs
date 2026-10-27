@@ -69,6 +69,33 @@ pub fn is_music_url(url: &str) -> bool {
         || ((u.contains("vk.com/") || u.contains("vk.ru/")) && (u.contains("/music") || u.contains("/audio")))
 }
 
+/// Небольшая музыка (трек, альбом или список до 20 треков) — её можно качать параллельно
+/// с длинной загрузкой, не дожидаясь очереди.
+pub fn is_small_music(url: &str) -> bool {
+    if let Some(path) = url.strip_prefix("vgdlist:") {
+        return read_list(Path::new(path)).is_ok_and(|l| l.tracks.len() <= 20);
+    }
+    if !is_music_url(url) {
+        return false;
+    }
+    let u = url.to_ascii_lowercase();
+    let path = u.split("://").nth(1).unwrap_or(&u).split(['?', '#']).next().unwrap_or("");
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if u.contains("soundcloud.com/") {
+        // soundcloud.com/автор/трек — один трек; /sets/, /likes, /tracks и сам автор — нет.
+        return segs.len() == 3 && !["sets", "likes", "tracks", "reposts", "albums", "popular-tracks"].contains(&segs[2]);
+    }
+    if u.contains("music.youtube.com/") {
+        return u.contains("watch?v=") && !u.contains("list=");
+    }
+    if u.contains("vk.com/") || u.contains("vk.ru/") {
+        // vk.com/audio-123_456 — один трек; плейлисты и «моя музыка» — нет.
+        return segs.last().is_some_and(|s| s.starts_with("audio") && !s.starts_with("audio_playlist") && s.contains('_'));
+    }
+    // Spotify, Яндекс, Apple, Deezer: трек или альбом.
+    segs.iter().any(|s| matches!(*s, "track" | "album" | "song")) || u.contains("?i=")
+}
+
 /// Список треков по ссылке. SoundCloud и YouTube Music разворачивает yt-dlp (в `downloader.rs`),
 /// поэтому для них здесь `None`.
 pub fn resolve(url: &str, s: &Settings, log: &dyn Fn(String)) -> Option<Result<MusicList, String>> {
@@ -460,7 +487,8 @@ fn yandex(url: &str) -> Result<MusicList, String> {
     let path = url.split("music.yandex.").nth(1).and_then(|r| r.split_once('/')).map(|(_, p)| p).unwrap_or("");
     let path = path.split(['?', '#']).next().unwrap_or("");
     let p: Vec<&str> = path.split('/').filter(|x| !x.is_empty()).collect();
-    let none = Vec::new();
+    // С входом в Яндекс — от аккаунта: без него API иногда отвечает «Unavailable For Legal Reasons» (VPN, страна).
+    let none: Vec<String> = crate::yandex_acc::token().map(|t| vec![format!("Authorization: OAuth {t}")]).unwrap_or_default();
     let arr = |v: &Value| -> Vec<Value> { v.as_array().cloned().unwrap_or_default() };
     match p.as_slice() {
         ["album", _, "track", tid, ..] | ["track", tid, ..] => {
@@ -606,6 +634,79 @@ pub fn deezer_isrc(t: &Track) -> Option<String> {
 }
 
 /// ISRC трека Deezer по его id.
+/// 30-секундный отрывок трека с Deezer (mp3) — образец для проверки по звуку.
+/// По ISRC, по id трека Deezer или поиском по исполнителю и названию.
+pub fn deezer_preview(t: &Track) -> Option<String> {
+    let pick = |v: &Value| v["preview"].as_str().filter(|x| !x.is_empty()).map(String::from);
+    if let Some(isrc) = &t.isrc {
+        if let Some(p) = get_json(&format!("https://api.deezer.com/track/isrc:{isrc}"), &[]).ok().as_ref().and_then(pick) {
+            return Some(p);
+        }
+    }
+    if let Some(id) = t.key.strip_prefix("deezer:") {
+        if let Some(p) = get_json(&format!("https://api.deezer.com/track/{id}"), &[]).ok().as_ref().and_then(pick) {
+            return Some(p);
+        }
+    }
+    let artist = t.artist.split(',').next().unwrap_or("").trim();
+    if artist.is_empty() || t.title.is_empty() {
+        return None;
+    }
+    let q = format!("artist:\"{artist}\" track:\"{}\"", t.title);
+    let v = get_json(&format!("https://api.deezer.com/search?q={}&limit=5", qenc(&q)), &[]).ok()?;
+    v["data"]
+        .as_array()?
+        .iter()
+        .find(|d| matches(t, &s(d, "title"), &s(&d["artist"], "name"), d["duration"].as_f64()))
+        .and_then(pick)
+}
+
+/// Тот же трек на других сервисах через song.link (Odesli): точное совпадение, без поиска по названию.
+/// Порядок: YouTube Music, SoundCloud, YouTube. С октября 2026 открытый API требует ключ (`key`);
+/// без ключа или после отказа — сразу пусто (обычный поиск). Не чаще раза в 6,5 с (лимит 10 в минуту).
+pub fn odesli(t: &Track, key: &str) -> Vec<(&'static str, String)> {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    static REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if key.trim().is_empty() || REFUSED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Vec::new();
+    }
+    let (platform, id) = match t.key.split_once(':') {
+        Some(("spotify", id)) => ("spotify", id),
+        Some(("deezer", id)) => ("deezer", id),
+        Some(("yandex", id)) => ("yandex", id),
+        Some(("apple", id)) if id.chars().all(|c| c.is_ascii_digit()) => ("appleMusic", id),
+        _ => return Vec::new(),
+    };
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|l| l.elapsed() < std::time::Duration::from_millis(6500)) {
+            return Vec::new();
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    let url = format!("https://api.song.link/v1-alpha.1/links?platform={platform}&type=song&id={}&userCountry=RU&key={}", qenc(id), qenc(key.trim()));
+    let Ok(v) = get_json(&url, &[]) else { return Vec::new() };
+    if v["statusCode"].as_i64().is_some_and(|c| c == 401 || c == 403) {
+        REFUSED.store(true, std::sync::atomic::Ordering::Relaxed); // ключ не подошёл — больше не спрашиваем
+        return Vec::new();
+    }
+    let links = &v["linksByPlatform"];
+    [("youtubeMusic", "YouTube Music"), ("soundcloud", "SoundCloud"), ("youtube", "YouTube")]
+        .iter()
+        .filter_map(|(k, label)| links[*k]["url"].as_str().map(|u| (*label, u.to_string())))
+        .collect()
+}
+
+/// Скачать файл по ссылке (curl).
+pub fn download_to(url: &str, path: &Path) -> Result<(), String> {
+    let p = path.to_string_lossy().into_owned();
+    curl(&["-o", &p, url])?;
+    if path.metadata().map(|m| m.len()).unwrap_or(0) < 1000 {
+        return Err("файл не скачался".into());
+    }
+    Ok(())
+}
+
 pub fn deezer_track_isrc(id: &str) -> Option<String> {
     let v = get_json(&format!("https://api.deezer.com/track/{id}"), &[]).ok()?;
     v["isrc"].as_str().filter(|x| !x.is_empty()).map(String::from)

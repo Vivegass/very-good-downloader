@@ -197,6 +197,64 @@ pub fn vtuple(v: &str) -> Vec<u64> {
     v.trim().split('.').filter_map(|x| x.parse().ok()).collect()
 }
 
+/// Служебные файлы и папки (архив скачанного, индекс каналов, `.parts`) — скрытые в Проводнике:
+/// нужны программе, а не человеку.
+pub fn hide(path: &Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetFileAttributesW(name: *const u16) -> u32;
+            fn SetFileAttributesW(name: *const u16, attrs: u32) -> i32;
+        }
+        const HIDDEN: u32 = 0x2;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        unsafe {
+            let a = GetFileAttributesW(wide.as_ptr());
+            if a != u32::MAX && a & HIDDEN == 0 {
+                SetFileAttributesW(wide.as_ptr(), a | HIDDEN);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
+/// Дописать строку в служебный файл (и скрыть его).
+pub fn append_hidden(path: &Path, line: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{line}");
+    }
+    hide(path);
+}
+
+/// Записать служебный файл целиком. Скрытый файл Windows не даёт пересоздать (`fs::write`),
+/// поэтому открываем существующий и обрезаем.
+pub fn write_hidden(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(path)?;
+    f.set_len(0)?;
+    f.write_all(data)?;
+    drop(f);
+    hide(path);
+    Ok(())
+}
+
+/// Создать служебную папку (скрытую).
+pub fn hidden_dir(path: &Path) {
+    let _ = std::fs::create_dir_all(path);
+    hide(path);
+}
+
+/// Открыть ссылку в браузере по умолчанию.
+pub fn open_url(url: &str) {
+    if url.starts_with("https://") {
+        let _ = Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    }
+}
+
 /// Открыть файл или папку в Проводнике / программе по умолчанию.
 pub fn open_path(path: &Path) {
     let _ = Command::new("explorer").arg(path).spawn();

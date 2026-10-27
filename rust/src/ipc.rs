@@ -165,13 +165,20 @@ fn read_request(conn: &mut TcpStream) -> Option<Request> {
     Some(Request { method, path, headers, body })
 }
 
-fn respond(conn: &mut TcpStream, status: &str, body: &str) {
+/// Ответ; для приложения Spotify (`cors`) — с заголовками CORS, иначе его страница ответ не прочитает.
+fn respond_to(conn: &mut TcpStream, cors: Option<&str>, status: &str, body: &str) {
+    let cors = cors
+        .map(|o| format!("Access-Control-Allow-Origin: {o}\r\nAccess-Control-Allow-Methods: GET, POST\r\nAccess-Control-Allow-Headers: X-VGD, Content-Type\r\nAccess-Control-Max-Age: 600\r\nVary: Origin\r\n"))
+        .unwrap_or_default();
     let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{cors}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = conn.write_all(resp.as_bytes());
 }
+
+/// Страница приложения Spotify (расширение Spicetify `vgd.js`).
+const SPOTIFY_ORIGIN: &str = "https://xpui.app.spotify.com";
 
 /// Запросы только от расширения браузера или второго запуска программы:
 /// обычная веб-страница не может добавить заголовок `X-VGD` без разрешения (CORS),
@@ -182,23 +189,30 @@ fn allowed(req: &Request) -> bool {
     }
     match req.header("origin") {
         None => true,
-        Some(o) => o.starts_with("chrome-extension://") || o.starts_with("moz-extension://") || o.starts_with("extension://"),
+        Some(o) => {
+            o.starts_with("chrome-extension://") || o.starts_with("moz-extension://") || o.starts_with("extension://") || o == SPOTIFY_ORIGIN
+        }
     }
 }
 
 fn handle(mut conn: TcpStream, on_urls: &dyn Fn(Vec<String>)) -> Option<()> {
     let req = read_request(&mut conn)?;
     let path = req.path.split('?').next().unwrap_or("");
+    let cors = (req.header("origin") == Some(SPOTIFY_ORIGIN)).then_some(SPOTIFY_ORIGIN);
     match (req.method.as_str(), path) {
+        // Предварительный запрос CORS из приложения Spotify (заголовок X-VGD — «непростой»).
+        ("OPTIONS", _) if cors.is_some() => {
+            respond_to(&mut conn, cors, "204 No Content", "");
+        }
         ("GET", "/ping") if allowed(&req) => {
-            respond(&mut conn, "200 OK", &format!("{{\"app\":\"vgd\",\"version\":\"{APP_VERSION}\"}}"));
+            respond_to(&mut conn, cors, "200 OK", &format!("{{\"app\":\"vgd\",\"version\":\"{APP_VERSION}\"}}"));
         }
         ("POST", "/hello") if allowed(&req) => {
             let v: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
             if let (Ok(mut e), Some(ver)) = (EXTENSION.lock(), v.get("version").and_then(|x| x.as_str())) {
                 *e = Some(ver.chars().take(20).collect());
             }
-            respond(&mut conn, "200 OK", "{\"ok\":true}");
+            respond_to(&mut conn, cors, "200 OK", "{\"ok\":true}");
         }
         ("POST", "/add") if allowed(&req) => {
             let v: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
@@ -220,9 +234,9 @@ fn handle(mut conn: TcpStream, on_urls: &dyn Fn(Vec<String>)) -> Option<()> {
             }
             let n = urls.len();
             on_urls(urls); // пустой список — просто показать окно
-            respond(&mut conn, "200 OK", &format!("{{\"ok\":true,\"added\":{n}}}"));
+            respond_to(&mut conn, cors, "200 OK", &format!("{{\"ok\":true,\"added\":{n}}}"));
         }
-        _ => respond(&mut conn, "403 Forbidden", "{\"ok\":false}"),
+        _ => respond_to(&mut conn, cors, "403 Forbidden", "{\"ok\":false}"),
     }
     Some(())
 }
@@ -285,5 +299,32 @@ mod tests {
         assert_eq!(decode_vgd("vgd://add?url=javascript%3Aalert(1)"), None);
         let args = vec!["--page=log".to_string(), "https://vimeo.com/1".to_string(), "vgd://add?url=https%3A%2F%2Fx.com%2Fa".to_string()];
         assert_eq!(launch_urls(args), vec!["https://vimeo.com/1".to_string(), "https://x.com/a".to_string()]);
+    }
+
+    /// Запрос из приложения Spotify: предварительный OPTIONS и POST /add — с заголовками CORS;
+    /// чужой сайт — отказ.
+    #[test]
+    fn spotify_cors() {
+        let ask = |req: String| -> String {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let a = l.local_addr().unwrap();
+            let t = std::thread::spawn(move || {
+                let (c, _) = l.accept().unwrap();
+                let _ = handle(c, &|_| {});
+            });
+            let mut s = TcpStream::connect(a).unwrap();
+            s.write_all(req.as_bytes()).unwrap();
+            let mut out = String::new();
+            let _ = s.read_to_string(&mut out);
+            t.join().unwrap();
+            out
+        };
+        let pre = ask(format!("OPTIONS /add HTTP/1.1\r\nOrigin: {SPOTIFY_ORIGIN}\r\nAccess-Control-Request-Headers: x-vgd,content-type\r\n\r\n"));
+        assert!(pre.starts_with("HTTP/1.1 204") && pre.contains("Access-Control-Allow-Headers: X-VGD"), "{pre}");
+        let body = r#"{"name":"P","service":"Spotify","tracks":[]}"#;
+        let post = ask(format!("POST /add HTTP/1.1\r\nOrigin: {SPOTIFY_ORIGIN}\r\nX-VGD: 1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+        assert!(post.starts_with("HTTP/1.1 200") && post.contains(&format!("Access-Control-Allow-Origin: {SPOTIFY_ORIGIN}")), "{post}");
+        let evil = ask("OPTIONS /add HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n".into());
+        assert!(evil.starts_with("HTTP/1.1 403") && !evil.contains("Allow-Origin"), "{evil}");
     }
 }

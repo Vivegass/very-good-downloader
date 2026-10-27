@@ -314,7 +314,7 @@ impl Sorter {
     fn save(&self) {
         let _ = std::fs::create_dir_all(&self.root);
         if let Ok(t) = serde_json::to_string_pretty(&self.index) {
-            let _ = std::fs::write(self.root.join(INDEX_NAME), t);
+            let _ = crate::appinfo::write_hidden(&self.root.join(INDEX_NAME), t.as_bytes());
         }
     }
 

@@ -19,6 +19,8 @@ fn help(s: &Settings) -> String {
 
   -o, --out <папка>        папка (сейчас: {out})
   -e, --edit <формат>      копия для монтажа: none / h264 / prores (сейчас: {edit})
+      --edit-only          сохранить сразу в формате -e, без оригинала MKV
+      --preset <название>  пресет настроек из окна программы (остальные ключи — поверх него)
   -r, --max-height <N>     макс. разрешение по меньшей стороне: 1080, 720… (0 — без ограничения)
   -f, --max-fps <N>        макс. fps (0 — без ограничения); если формата нет — пересчёт ffmpeg
   -c, --cookies <браузер>  куки для 18+/закрытых: {browsers}, none или путь к cookies.txt
@@ -33,12 +35,17 @@ fn help(s: &Settings) -> String {
       --limit <N>          из плейлиста брать только первые N треков/видео
       --section <с-до>     только фрагмент, например 1:30-2:45 (или 90-165)
       --audio              только звук
+      --split-tracks       микс/альбом одним видео → отдельные треки по главам или таймкодам
       --sponsorblock       вырезать спонсорские вставки
       --chapters           разбить видео по главам на отдельные файлы
 
+  vgd yandex               войти в Яндекс Музыку (кодом) — звук прямо с Яндекса и поиск там
+  vgd spotify              поставить кнопки «скачать» в приложение Spotify (Spicetify; совместимо со SpotX)
   vgd sync                 проверить подписки (из окна программы) и скачать новые видео —
                            удобно для Планировщика заданий Windows
       --music-format <ф>   музыка: best (как есть) / mp3 / m4a / flac
+      --no-substitutes     не искать замену трекам, недоступным на самом сервисе (VK, SoundCloud…)
+      --no-verify          не сверять найденную замену по звуку с отрывком оригинала (Deezer)
       --watch [папка]      показывать прогресс фоновой загрузки (по download_log.txt)
   -h, --help               эта справка
 ",
@@ -58,6 +65,11 @@ struct Args {
     sub_langs: Option<String>,
     no_playlist: bool,
     no_subs: bool,
+    edit_only: bool,
+    no_verify: bool,
+    split_tracks: bool,
+    preset: Option<String>,
+    no_substitutes: bool,
     no_thumb: bool,
     no_sort: bool,
     sort_existing: bool,
@@ -71,6 +83,8 @@ struct Args {
     sponsorblock: bool,
     chapters: bool,
     sync: bool,
+    spotify: bool,
+    yandex: bool,
     help: bool,
 }
 
@@ -78,9 +92,9 @@ fn parse() -> Result<Args, lexopt::Error> {
     use lexopt::prelude::*;
     let mut a = Args {
         urls: vec![], out: None, edit: None, max_height: None, max_fps: None, cookies: None, sub_langs: None,
-        no_playlist: false, no_subs: false, no_thumb: false, no_sort: false, sort_existing: false, yes: false,
+        no_playlist: false, no_subs: false, edit_only: false, no_verify: false, split_tracks: false, preset: None, no_substitutes: false, no_thumb: false, no_sort: false, sort_existing: false, yes: false,
         update: false, watch: None, help: false, limit: None, music_format: None, section: None, audio: false,
-        sponsorblock: false, chapters: false, sync: false,
+        sponsorblock: false, chapters: false, sync: false, spotify: false, yandex: false,
     };
     let mut p = lexopt::Parser::from_env();
     while let Some(arg) = p.next()? {
@@ -99,6 +113,11 @@ fn parse() -> Result<Args, lexopt::Error> {
             Long("sub-langs") => a.sub_langs = Some(p.value()?.string()?),
             Long("no-playlist") => a.no_playlist = true,
             Long("no-subs") => a.no_subs = true,
+            Long("edit-only") => a.edit_only = true,
+            Long("split-tracks") => a.split_tracks = true,
+            Long("no-verify") => a.no_verify = true,
+            Long("preset") => a.preset = Some(p.value()?.string()?),
+            Long("no-substitutes") => a.no_substitutes = true,
             Long("no-thumb") => a.no_thumb = true,
             Long("no-sort") => a.no_sort = true,
             Long("sort-existing") => a.sort_existing = true,
@@ -113,6 +132,8 @@ fn parse() -> Result<Args, lexopt::Error> {
             Long("chapters") => a.chapters = true,
             Long("music-format") => a.music_format = Some(p.value()?.string()?),
             Value(v) if v == "sync" && a.urls.is_empty() => a.sync = true,
+            Value(v) if v == "spotify" && a.urls.is_empty() => a.spotify = true,
+            Value(v) if v == "yandex" && a.urls.is_empty() => a.yandex = true,
             Value(v) => {
                 let v = v.string()?;
                 // «--watch G:\папка» без «=»: следующий аргумент — папка, а не ссылка.
@@ -137,8 +158,55 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if a.yandex {
+        return match vgd::yandex_acc::login(&|code, url| {
+            println!("Откройте {url} и введите код: {code}");
+            vgd::appinfo::open_url(url);
+        }) {
+            Ok(()) => {
+                let mut s2 = s.clone();
+                s2.yandex_acc = true;
+                s2.save();
+                println!("Вход в Яндекс Музыку выполнен.");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("vgd: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if a.spotify {
+        let mut s2 = s.clone();
+        return match vgd::spotify_app::install(true, &|m| println!("{m}")) {
+            Ok(()) => {
+                s2.spotify_app = true;
+                s2.save();
+                if let Ok(gui) = std::env::current_exe().map(|e| e.with_file_name("Very Good Downloader.exe")) {
+                    if gui.exists() {
+                        vgd::spotify_app::set_autorepair(true, &gui);
+                    }
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("vgd: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if a.sync {
         return sync(&mut s);
+    }
+    if let Some(name) = &a.preset {
+        match s.presets.iter().find(|p| p.name.eq_ignore_ascii_case(name)) {
+            Some(p) => s = s.with_values(&p.values),
+            None => {
+                let names: Vec<&str> = s.presets.iter().map(|p| p.name.as_str()).collect();
+                eprintln!("vgd: нет пресета «{name}». Есть: {}", if names.is_empty() { "—".into() } else { names.join(", ") });
+                return ExitCode::from(2);
+            }
+        }
     }
     if a.help {
         print!("{}", help(&s));
@@ -186,6 +254,9 @@ fn main() -> ExitCode {
     s.sort = s.sort && !a.no_sort;
     s.sponsorblock |= a.sponsorblock;
     s.split_chapters |= a.chapters;
+    s.edit_replace |= a.edit_only;
+    s.music_no_replace |= a.no_substitutes;
+    s.music_verify &= !a.no_verify;
     s.playlist = s.playlist && !a.no_playlist;
     s.subs = s.subs && !a.no_subs;
     s.thumbnail = s.thumbnail && !a.no_thumb;
@@ -232,6 +303,7 @@ fn main() -> ExitCode {
             dl.opts.to = t.trim().to_string();
         }
         dl.opts.audio_only = a.audio;
+        dl.opts.split_tracks = a.split_tracks;
         match dl.run(url) {
             Ok(files) => {
                 println!();

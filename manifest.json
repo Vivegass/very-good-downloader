@@ -1,0 +1,9 @@
+{
+  "name": "Very Good Downloader",
+  "description": "Download buttons in Spotify: track, playlist of any length, album, artist, Liked Songs and now playing — sent to the Very Good Downloader app (Windows).",
+  "preview": "docs/app.png",
+  "main": "spicetify/vgd.js",
+  "readme": "spicetify/README.md",
+  "authors": [{ "name": "Vivegass", "url": "https://github.com/Vivegass" }],
+  "tags": ["download", "playlist", "utility"]
+}

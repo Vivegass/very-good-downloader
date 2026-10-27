@@ -12,6 +12,58 @@ use crate::net::is_network_error;
 use crate::sort::safe_name;
 
 const ARCHIVE: &str = ".music_archive.txt";
+/// Подпапка для треков, найденных не там, где их просили (настройка «замены — в отдельную папку»).
+pub const REPLACED_DIR: &str = "_из других мест";
+
+/// Откуда скачан трек: файл, сервис, ссылка.
+struct Got {
+    path: PathBuf,
+    from: String,
+    url: String,
+}
+
+/// Скопировать уже скачанный трек в папку плейлиста под именем «NN - Исполнитель - Название» (и .lrc рядом).
+fn copy_track(src: &Path, dir: &Path, t: &Track, prefix: Option<&str>) -> Option<PathBuf> {
+    let _ = std::fs::create_dir_all(dir);
+    let ext = src.extension()?.to_string_lossy().into_owned();
+    let stem = track_stem(t, prefix);
+    let dst = dir.join(format!("{stem}.{ext}"));
+    std::fs::copy(src, &dst).ok()?;
+    let lrc = src.with_extension("lrc");
+    if lrc.exists() {
+        let _ = std::fs::copy(&lrc, dst.with_extension("lrc"));
+    }
+    Some(dst)
+}
+
+/// Откуда взят оригинал копии — его путь (для «_откуда скачано.txt»).
+fn existing_source(have: &std::collections::HashMap<String, PathBuf>, t: &Track) -> String {
+    have.get(&track_key(&t.artist, &t.title)).map(|p| p.display().to_string()).unwrap_or_default()
+}
+
+/// Имя файла трека без расширения: «01 - Исполнитель - Название» или «Исполнитель - Название».
+fn track_stem(t: &Track, prefix: Option<&str>) -> String {
+    let base = t.display().replace(" — ", " - ");
+    safe_name(&match prefix {
+        Some(p) => format!("{p} - {base}"),
+        None => base,
+    }.replace(['/', '\\'], "_"), 150)
+}
+
+/// Название сервиса по ссылке — для журнала «откуда скачано».
+fn site_of(url: &str) -> String {
+    let host = url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or("").trim_start_matches("www.");
+    match host {
+        h if h.contains("vk.com") || h.contains("vkuseraudio") || h.contains("vk.me") => "VK".into(),
+        h if h.contains("music.youtube") => "YouTube Music".into(),
+        h if h.contains("youtube") || h.contains("youtu.be") => "YouTube".into(),
+        h if h.contains("soundcloud") || h.contains("sndcdn") => "SoundCloud".into(),
+        h if h.contains("audius") => "Audius".into(),
+        h if h.contains("yandex") => "Яндекс Музыка".into(),
+        "" => "сайт".into(),
+        h => h.to_string(),
+    }
+}
 
 /// Где искать замену, по порядку: YouTube Music (официальные аудио), SoundCloud, обычный YouTube.
 const SEARCH: [(&str, &str); 4] =
@@ -42,9 +94,9 @@ fn track_key(artist: &str, title: &str) -> String {
     format!("{}|{}", music::normalize(a), music::normalize(title))
 }
 
-/// Все треки в папке «Музыка» по именам файлов «01 - Исполнитель - Название.ext».
-fn existing_tracks(root: &Path) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
+/// Треки в папке (со вложенными) по именам файлов «01 - Исполнитель - Название.ext»: ключ → файл.
+fn existing_tracks(root: &Path) -> std::collections::HashMap<String, PathBuf> {
+    let mut out = std::collections::HashMap::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
@@ -64,7 +116,7 @@ fn existing_tracks(root: &Path) -> std::collections::HashSet<String> {
                 parts.remove(0);
             }
             if parts.len() >= 2 {
-                out.insert(track_key(parts[0], &parts[1..].join(" - ")));
+                out.entry(track_key(parts[0], &parts[1..].join(" - "))).or_insert(p);
             }
         }
     }
@@ -87,6 +139,7 @@ impl Downloader {
             limit: None,
             opts: self.opts.clone(),
             tiktok: false,
+            asked: self.asked.clone(),
         }
     }
 
@@ -130,10 +183,14 @@ impl Downloader {
             root.join(safe_name(&list.name, 80))
         };
         std::fs::create_dir_all(&dir).map_err(|e| DlError::Failed(format!("Не удалось создать папку: {e}")))?;
-        let archive_path = root.join(ARCHIVE);
-        let archive: std::collections::HashSet<String> = std::fs::read_to_string(&archive_path)
-            .map(|t| t.lines().map(|l| l.trim().to_string()).collect())
-            .unwrap_or_default();
+        // Архив скачанного — свой у каждой папки (плейлиста, исполнителя): один трек может быть
+        // в нескольких плейлистах. Общий архив в «Музыка» — от прошлых версий и подписок.
+        let archive_path = dir.join(ARCHIVE);
+        let read_keys = |p: &Path| -> std::collections::HashSet<String> {
+            std::fs::read_to_string(p).map(|t| t.lines().map(|l| l.trim().to_string()).collect()).unwrap_or_default()
+        };
+        let archive = read_keys(&archive_path);
+        let root_archive = read_keys(&root.join(ARCHIVE));
         if !list.single {
             self.log(format!(
                 "{} «{}»: {total} трек(ов){}",
@@ -150,6 +207,7 @@ impl Downloader {
                     let _ = writeln!(f, "{}", t.key);
                 }
             }
+            crate::appinfo::hide(&archive_path);
             let msg = format!("Подписка «{}»: запомнил {} трек(ов) — дальше буду качать только новые.", list.name, list.tracks.len());
             self.log(msg.clone());
             self.p = Progress { stage: "done".into(), percent: 100.0, message: msg, title: list.name.clone(), ..Default::default() };
@@ -158,8 +216,12 @@ impl Downloader {
         }
         let n = list.tracks.len();
         let width = n.to_string().len().max(2);
-        // Уже скачанное с любого сервиса (по «исполнитель — название» в именах файлов) — не качаем снова.
-        let have = existing_tracks(&root);
+        // Уже есть в этой папке (с любого сервиса, по «исполнитель — название» в именах файлов) — пропускаем.
+        // Есть в другой папке «Музыка» — копируем оттуда, а не качаем заново.
+        let have_here = existing_tracks(&dir);
+        let have_all = existing_tracks(&root);
+        let numbers = self.s.music_numbers && !list.single;
+        let mut copied: Vec<(usize, PathBuf)> = Vec::new();
         let mut skipped = 0;
         let mut todo = std::collections::VecDeque::new();
         let mut album_pos: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -172,19 +234,47 @@ impl Downloader {
             } else {
                 i + 1
             };
-            if archive.contains(&t.key) || have.contains(&track_key(&t.artist, &t.title)) {
+            let tk = track_key(&t.artist, &t.title);
+            if archive.contains(&t.key) || have_here.contains_key(&tk) {
+                skipped += 1;
+                continue;
+            }
+            if let Some(src) = have_all.get(&tk) {
+                let tdir = if list.by_album { dir.join(safe_name(&t.album, 100)) } else { dir.clone() };
+                let prefix = numbers.then(|| format!("{:0w$}", num, w = if list.by_album { 2 } else { width }));
+                if let Some(p) = copy_track(src, &tdir, t, prefix.as_deref()) {
+                    copied.push((i, p));
+                    continue;
+                }
+            } else if root_archive.contains(&t.key) {
+                // В общем архиве, но файла нигде нет — запомнен подпиской («старое не качать») или удалён.
                 skipped += 1;
                 continue;
             }
             todo.push_back((i, num, t.clone()));
         }
         if skipped > 0 && !todo.is_empty() {
-            self.log(format!("Уже скачано раньше: {skipped} — пропускаю."));
+            self.log(format!("Уже есть в этой папке: {skipped} — пропускаю."));
+        }
+        if !copied.is_empty() {
+            self.log(format!("Уже скачаны в других папках: {} — скопировал сюда, не качая заново.", copied.len()));
+        }
+        let mut m3u: Vec<(usize, String)> = Vec::new();
+        for (i, p) in &copied {
+            let t = &list.tracks[*i];
+            crate::appinfo::append_hidden(&archive_path, &t.key);
+            if let Ok(rel) = p.strip_prefix(&dir) {
+                m3u.push((*i, rel.to_string_lossy().replace('\\', "/")));
+            }
+            if self.s.source_log {
+                super::note_source(p, "копия уже скачанного", &existing_source(&have_all, t), &self.asked);
+            }
+            self.results.push(p.to_string_lossy().into_owned());
         }
         let total = todo.len();
         let queue = std::sync::Arc::new(std::sync::Mutex::new(todo));
         let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (tx, rx) = std::sync::mpsc::channel::<(usize, Track, R<PathBuf>)>();
+        let (tx, rx) = std::sync::mpsc::channel::<(usize, Track, R<Got>)>();
         // Несколько треков сразу: поиск и скачивание идут параллельно (быстрее в 2–3 раза).
         let workers = if list.single { 1 } else { 4 }.min(total.max(1));
         let mut handles = Vec::new();
@@ -238,14 +328,14 @@ impl Downloader {
             }));
         }
         drop(tx);
-        let mut m3u: Vec<(usize, String)> = Vec::new();
         let mut not_found: Vec<String> = Vec::new();
         let mut cancelled: Option<DlError> = None;
         for (i, t, result) in rx {
             match result {
-                Ok(path) => {
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&archive_path) {
-                        let _ = writeln!(f, "{}", t.key);
+                Ok(Got { path, from, url }) => {
+                    crate::appinfo::append_hidden(&archive_path, &t.key);
+                    if self.s.source_log {
+                        super::note_source(&path, &from, &url, &self.asked);
                     }
                     if let Ok(rel) = path.strip_prefix(&dir) {
                         m3u.push((i, rel.to_string_lossy().replace('\\', "/")));
@@ -290,7 +380,7 @@ impl Downloader {
             return fail(format!("Ни один трек не скачался: {}", not_found.join("; ")));
         }
         let mut msg = if self.results.is_empty() {
-            "Новых треков нет — всё уже скачано раньше.".to_string()
+            "Новых треков нет — всё уже есть в этой папке.".to_string()
         } else {
             format!("Готово: {} трек(ов) в {}", self.results.len(), dir.display())
         };
@@ -349,7 +439,7 @@ impl Downloader {
     }
 
     /// Один трек: сначала прямой источник, потом поиск замены.
-    fn music_track(&mut self, t: &Track, num: usize, dir: &Path, name: Option<&str>) -> R<PathBuf> {
+    fn music_track(&mut self, t: &Track, num: usize, dir: &Path, name: Option<&str>) -> R<Got> {
         let mut want = t.clone();
         if let Some(src) = t.source.clone() {
             // Сервер ответил 5xx / не дождались ответа (у VK бывает 504) — повторяем, а не ищем замену сразу.
@@ -375,12 +465,14 @@ impl Downloader {
                     if want.duration.is_none() {
                         want.duration = info.get("duration").and_then(Value::as_f64);
                     }
+                    let page = str_of(&info, &["webpage_url", "original_url"]).if_empty_else(&src);
                     match self.music_download(info, &want, num, dir, name) {
                         Ok(p) => {
                             if t.key.starts_with("vk:") {
                                 self.log(format!("«{}» — взял из VK.", want.display()));
                             }
-                            return Ok(p);
+                            let from = if t.key.starts_with("vk:") { "VK".to_string() } else { site_of(&page) };
+                            return Ok(Got { path: p, from, url: page });
                         }
                         Err(DlError::Cancelled(m)) => return Err(DlError::Cancelled(m)),
                         // Обрыв связи — не повод искать замену: вернёмся к этому же треку, когда сеть появится.
@@ -399,9 +491,31 @@ impl Downloader {
                 }
             }
         }
+        // Трек был на самом сервисе, но не скачался, а замену искать не просили.
+        if t.source.is_some() && self.s.music_no_replace {
+            return fail("недоступен на сервисе, замену не ищу (выключено в настройках музыки)");
+        }
+        // Трек Яндекс Музыки и есть вход в Яндекс — звук прямо с Яндекса (как у VK).
+        if let (Some(id), true) = (t.key.strip_prefix("yandex:"), self.s.yandex_acc && crate::yandex_acc::logged_in()) {
+            match self.yandex_download(id, &want, num, dir, name) {
+                Ok(g) => return Ok(g),
+                Err(DlError::Cancelled(m)) => return Err(DlError::Cancelled(m)),
+                Err(DlError::Failed(m)) if is_network_error(&m) => return fail(m),
+                Err(DlError::Failed(m)) => self.log(format!("«{}» не скачался с Яндекса ({}) — ищу замену.", want.display(), first_line(&m))),
+            }
+        }
         if want.title.is_empty() {
             return fail("нет названия для поиска");
         }
+        // Замены — в отдельную подпапку (только для сервисов, где у трека есть свой звук: VK, SoundCloud…).
+        let replaced_dir;
+        let dir = if t.source.is_some() && self.s.music_replace_dir {
+            replaced_dir = dir.join(REPLACED_DIR);
+            let _ = std::fs::create_dir_all(&replaced_dir);
+            replaced_dir.as_path()
+        } else {
+            dir
+        };
         // Нет ISRC (Spotify без ключа, VK, Яндекс) — узнаём его у Deezer: так находится точная запись.
         if want.isrc.is_none() && !want.artist.is_empty() {
             self.p.message = format!("Уточняю трек: {}", want.display());
@@ -417,6 +531,19 @@ impl Downloader {
             queries.push(("ytmusic", "YouTube Music", format!("\"{isrc}\"")));
         }
         let artist1 = want.artist.split(',').next().unwrap_or("").trim().to_string();
+        // Порядок: VK и Яндекс от аккаунта пользователя (часто mp3 320 / flac и редкие треки), затем точные
+        // ссылки song.link на тот же трек, затем обычный поиск.
+        let mut first: Vec<(&str, &str, String)> = Vec::new();
+        if self.s.vk_search && !t.key.starts_with("vk:") {
+            first.push(("vk", "VK", base.clone()));
+        }
+        if self.s.yandex_acc && !t.key.starts_with("yandex:") && crate::yandex_acc::logged_in() {
+            first.push(("yandex", "Яндекс Музыке", base.clone()));
+        }
+        for (label, url) in music::odesli(&want, &self.s.odesli_key) {
+            first.push(("direct", label, url));
+        }
+        queries.splice(0..0, first);
         for (kind, label) in SEARCH {
             queries.push((kind, label, base.clone()));
             // Редкие треки находятся точнее, если исполнитель в кавычках.
@@ -429,20 +556,30 @@ impl Downloader {
             queries.retain(|(k, _, _)| *k == only.as_str());
         }
         let mut last_err = String::from("ничего похожего не нашлось");
+        // Образец для проверки по звуку: 30 с оригинала с Deezer (скачивается один раз, если понадобится).
+        let mut sample: Option<Option<PathBuf>> = if self.s.music_verify { None } else { Some(None) };
+        let mut tried = std::collections::HashSet::new();
+        let result = 'search: {
         for (kind, label, q) in queries {
-            self.check_cancel()?;
+            if let Err(c) = self.check_cancel() {
+                break 'search Err(c);
+            }
             self.p.message = format!("Ищу на {label}: {}", want.display());
             self.emit();
             let cands = match self.music_search(kind, &q) {
                 Ok(c) => c,
-                Err(DlError::Cancelled(m)) => return Err(DlError::Cancelled(m)),
-                Err(DlError::Failed(m)) if is_network_error(&m) => return fail(m),
+                Err(DlError::Cancelled(m)) => break 'search Err(DlError::Cancelled(m)),
+                Err(DlError::Failed(m)) if is_network_error(&m) => break 'search fail(m),
                 Err(DlError::Failed(m)) => {
                     last_err = m;
                     continue;
                 }
             };
             for (url, title, uploader, dur) in cands.into_iter().take(4) {
+                // Один и тот же кандидат из разных запросов — проверяем один раз.
+                if !tried.insert(url.clone()) {
+                    continue;
+                }
                 // Дешёвая проверка по выдаче (название, автор, длительность), полная — по сведениям трека.
                 if !title.is_empty()
                     && !music::matches(&want, &title, &uploader, dur)
@@ -450,10 +587,21 @@ impl Downloader {
                 {
                     continue;
                 }
+                // Трек Яндекса: ссылку на файл берём только для подходящего по названию кандидата.
+                let url = match url.strip_prefix("yandexid:") {
+                    Some(id) => match crate::yandex_acc::file_url(id, self.s.music_format == "flac" || self.s.music_format == "best") {
+                        Ok((u, _)) => u,
+                        Err(e) => {
+                            last_err = e;
+                            continue;
+                        }
+                    },
+                    None => url,
+                };
                 let info = match self.music_info(&url) {
                     Ok(i) => i,
-                    Err(DlError::Cancelled(m)) => return Err(DlError::Cancelled(m)),
-                    Err(DlError::Failed(m)) if is_network_error(&m) => return fail(m),
+                    Err(DlError::Cancelled(m)) => break 'search Err(DlError::Cancelled(m)),
+                    Err(DlError::Failed(m)) if is_network_error(&m) => break 'search fail(m),
                     Err(DlError::Failed(m)) => {
                         last_err = m;
                         continue;
@@ -462,30 +610,94 @@ impl Downloader {
                 let ct = str_of(&info, &["track", "title"]);
                 let ca = str_of(&info, &["artist", "creator", "uploader", "channel"]);
                 let cd = info.get("duration").and_then(Value::as_f64);
-                // У Audius ссылка ведёт прямо на mp3 — сведения уже проверены по ответу поиска.
-                if kind != "audius" && !music::matches(&want, &ct, &ca, cd) {
+                // У Audius и VK ссылка ведёт прямо на звук — сведения уже проверены по ответу поиска.
+                if !matches!(kind, "audius" | "vk" | "yandex") && !music::matches(&want, &ct, &ca, cd) {
                     continue;
                 }
+                let page = str_of(&info, &["webpage_url", "original_url"]).if_empty_else(&url);
                 match self.music_download(info, &want, num, dir, name) {
                     Ok(p) => {
-                        if t.source.is_some() || !label.is_empty() {
-                            self.log(format!("«{}» — взял с {label}.", want.display()));
+                        // Проверка по звуку: тот ли это трек, а не кавер, ремикс или «sped up».
+                        if sample.is_none() {
+                            self.p.message = format!("Беру образец звука: {}", want.display());
+                            self.emit();
+                            let path = music::music_root(&self.s).join(".parts").join(format!("sample-{}.mp3", rand_u64()));
+                            sample = Some(music::deezer_preview(&want).and_then(|u| music::download_to(&u, &path).ok().map(|_| path)));
                         }
-                        return Ok(p);
+                        let mut note = String::new();
+                        if let Some(Some(sp)) = &sample {
+                            self.p.message = format!("Сверяю по звуку: {}", want.display());
+                            self.emit();
+                            match crate::fingerprint::compare(sp, &p) {
+                                Some(sim) if sim < crate::fingerprint::SAME_MIN => {
+                                    self.log(format!(
+                                        "«{}»: на {label} нашёлся «{ct}», но звук не совпал с оригиналом (сходство {:.0}%) — ищу дальше.",
+                                        want.display(),
+                                        sim * 100.0
+                                    ));
+                                    let _ = std::fs::remove_file(&p);
+                                    let _ = std::fs::remove_file(p.with_extension("lrc"));
+                                    last_err = "нашлись похожие, но звук не совпал с оригиналом".into();
+                                    continue;
+                                }
+                                Some(sim) => note = format!(", звук совпал с оригиналом на {:.0}%", sim * 100.0),
+                                None => {}
+                            }
+                        }
+                        if t.source.is_some() || !label.is_empty() {
+                            self.log(format!("«{}» — взял с {label}{note}.", want.display()));
+                        }
+                        let from = if t.source.is_some() { format!("{label} (замена)") } else { label.to_string() };
+                        break 'search Ok(Got { path: p, from, url: page });
                     }
-                    Err(DlError::Cancelled(m)) => return Err(DlError::Cancelled(m)),
-                    Err(DlError::Failed(m)) if is_network_error(&m) => return fail(m),
+                    Err(DlError::Cancelled(m)) => break 'search Err(DlError::Cancelled(m)),
+                    Err(DlError::Failed(m)) if is_network_error(&m) => break 'search fail(m),
                     Err(DlError::Failed(m)) => last_err = m,
                 }
             }
         }
+        // SoundCloud Go+ и лицензированные треки зашифрованы — yt-dlp их не скачивает.
+        if last_err.contains("DRM") {
+            last_err = "нашлась только защищённая версия (DRM, обычно SoundCloud Go+) — её скачать нельзя, на других сайтах трека нет".into();
+        }
         fail(last_err)
+        };
+        if let Some(Some(sp)) = sample {
+            let _ = std::fs::remove_file(sp);
+        }
+        result
+    }
+
+    /// Звук трека прямо с Яндекс Музыки (вход пользователя): flac для «как есть» и «flac», иначе лучший сжатый.
+    fn yandex_download(&mut self, id: &str, want: &Track, num: usize, dir: &Path, name: Option<&str>) -> R<Got> {
+        self.p.message = format!("Беру с Яндекса: {}", want.display());
+        self.emit();
+        let lossless = self.s.music_format == "flac" || self.s.music_format == "best";
+        let (url, codec) = crate::yandex_acc::file_url(id, lossless).map_err(DlError::Failed)?;
+        let info = self.music_info(&url)?;
+        let p = self.music_download(info, want, num, dir, name)?;
+        self.log(format!("«{}» — взял с Яндекс Музыки ({codec}).", want.display()));
+        Ok(Got { path: p, from: format!("Яндекс Музыка ({codec})"), url: format!("https://music.yandex.ru/track/{id}") })
     }
 
     /// Поиск: (ссылка, название) лучших совпадений.
     fn music_search(&mut self, kind: &str, q: &str) -> R<Vec<(String, String, String, Option<f64>)>> {
         if kind == "audius" {
             return music::audius_search(q).map_err(DlError::Failed);
+        }
+        if kind == "direct" {
+            // Ссылка от song.link — сразу кандидат (название проверится по сведениям трека).
+            return Ok(vec![(q.to_string(), String::new(), String::new(), None)]);
+        }
+        if kind == "yandex" {
+            return crate::yandex_acc::search(q)
+                .map(|v| v.into_iter().map(|(id, title, artist, dur)| (format!("yandexid:{id}"), title, artist, dur)).collect())
+                .map_err(DlError::Failed);
+        }
+        if kind == "vk" {
+            return crate::vk_web::search(q, 8)
+                .map(|v| v.into_iter().map(|h| (h.url, h.title, h.artist, h.duration)).collect())
+                .map_err(DlError::Failed);
         }
         let target = match kind {
             "ytmusic" => format!("https://music.youtube.com/search?q={}#songs", urlencode(q)),
@@ -522,11 +734,7 @@ impl Downloader {
     /// Скачать звук по сведениям, вписав правильные теги и обложку.
     fn music_download(&mut self, mut info: Value, t: &Track, num: usize, dir: &Path, prefix: Option<&str>) -> R<PathBuf> {
         // Имя файла: «01 - Исполнитель - Название» (в плейлисте) или «Исполнитель - Название».
-        let base = t.display().replace(" — ", " - ");
-        let name = safe_name(&match prefix {
-            Some(p) => format!("{p} - {base}"),
-            None => base,
-        }.replace(['/', '\\'], "_"), 150);
+        let name = track_stem(t, prefix);
         if !t.title.is_empty() {
             info["title"] = json!(t.title);
             info["track"] = json!(t.title);
@@ -561,7 +769,7 @@ impl Downloader {
         }
         let root = music::music_root(&self.s);
         let parts = root.join(".parts");
-        let _ = std::fs::create_dir_all(&parts);
+        crate::appinfo::hidden_dir(&parts);
         let json_path = parts.join(format!("music-{}.json", rand_u64()));
         std::fs::write(&json_path, serde_json::to_vec(&info).unwrap_or_default())
             .map_err(|e| DlError::Failed(format!("временный файл: {e}")))?;

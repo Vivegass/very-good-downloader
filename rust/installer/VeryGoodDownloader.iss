@@ -2,7 +2,7 @@
 ; AppId тот же, что у Python-версии: установка поверх обновляет её, а не ставит вторую копию.
 #define AppName "Very Good Downloader"
 #ifndef AppVersion
-  #define AppVersion "1.10.0"
+  #define AppVersion "1.11.0"
 #endif
 #define AppExe "Very Good Downloader.exe"
 

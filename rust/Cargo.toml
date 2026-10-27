@@ -1,6 +1,6 @@
 [package]
 name = "vgd"
-version = "1.10.0"
+version = "1.11.0"
 edition = "2021"
 description = "Very Good Downloader: скачивание с YouTube (yt-dlp + ffmpeg)"
 build = "build.rs"
@@ -27,6 +27,11 @@ eframe = { version = "0.37", default-features = false, features = ["glow", "defa
 rfd = "0.17"
 arboard = { version = "3", default-features = false }
 tray-icon = "0.26"
+wry = "0.57.1"
+tao = "0.37.2"
+hmac = "0.13.0"
+sha2 = "0.11.1"
+base64 = "0.23.1"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

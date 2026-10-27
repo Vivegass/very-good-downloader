@@ -1,6 +1,7 @@
 //! Настройки: тот же settings.json, что у Python-версии (поля и значения совпадают).
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
 use crate::appinfo::data_dir;
@@ -73,7 +74,7 @@ pub struct Settings {
     pub subscriptions: Vec<Subscription>,
     /// проверять подписки при запуске окна
     pub subs_on_start: bool,
-    /// сворачивать окно в трей (значок у часов), а не на панель задач
+    /// крестик прячет окно в трей (значок у часов), программа продолжает работать
     pub tray: bool,
     /// номер трека в имени файла: «01 - Исполнитель - Название»
     pub music_numbers: bool,
@@ -81,6 +82,40 @@ pub struct Settings {
     pub recent_dirs: Vec<String>,
     /// свёрнутые группы на странице настроек
     pub collapsed: Vec<String>,
+    /// трека нет на самом сервисе (VK, SoundCloud…) — пропустить, а не искать на YouTube/SoundCloud
+    pub music_no_replace: bool,
+    /// треки, найденные не там, где их просили, — в подпапку «_из других мест»
+    pub music_replace_dir: bool,
+    /// «_откуда скачано.txt» рядом со скачанным: файл, источник, ссылка
+    pub source_log: bool,
+    /// копия для монтажа сохраняется вместо оригинала (MKV не остаётся)
+    pub edit_replace: bool,
+    /// сохранённые наборы настроек («Эдиты 1080/24», «Музыка FLAC»…)
+    pub presets: Vec<Preset>,
+    /// замену трека сверять по звуку с 30-секундным отрывком оригинала (Deezer)
+    pub music_verify: bool,
+    /// кнопки в приложении Spotify поставлены — следить, чтобы не пропадали после обновлений Spotify
+    pub spotify_app: bool,
+    /// искать замену в VK от аккаунта пользователя (первым, до YouTube Music)
+    pub vk_search: bool,
+    /// Яндекс Музыка от аккаунта: звук прямо с Яндекса и поиск замены там
+    pub yandex_acc: bool,
+    /// ключ API song.link (Odesli): точные ссылки на тот же трек на других сервисах
+    pub odesli_key: String,
+}
+
+/// Что можно поменять пресетом или у отдельной ссылки (имена полей Settings).
+pub const PRESET_KEYS: [&str; 13] = [
+    "out_dir", "max_height", "max_fps", "edit", "edit_replace", "music_format", "subs", "thumbnail",
+    "sponsorblock", "split_chapters", "sort", "playlist", "lyrics",
+];
+
+/// Пресет: название и значения полей из PRESET_KEYS.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Preset {
+    pub name: String,
+    pub values: Map<String, Value>,
 }
 
 /// Подписка на канал или плейлист.
@@ -111,6 +146,12 @@ pub struct JobOpts {
     pub seed_only: bool,
     /// пропускать видео старше стольких дней (0 — все)
     pub max_age_days: u32,
+    /// пресет настроек ("" — обычные настройки)
+    pub preset: String,
+    /// свои настройки только для этой ссылки (поверх пресета), поля из PRESET_KEYS
+    pub over: Map<String, Value>,
+    /// микс или альбом одним видео → отдельные треки по главам / таймкодам
+    pub split_tracks: bool,
 }
 
 impl JobOpts {
@@ -127,7 +168,7 @@ impl JobOpts {
 
     /// Такой файл не совпадает с «обычной» загрузкой видео — архив не трогаем.
     pub fn is_variant(&self) -> bool {
-        self.has_section() || self.audio_only
+        self.has_section() || self.audio_only || self.split_tracks
     }
 }
 
@@ -164,6 +205,16 @@ impl Default for Settings {
             music_numbers: true,
             recent_dirs: Vec::new(),
             collapsed: Vec::new(),
+            music_no_replace: false,
+            music_replace_dir: false,
+            source_log: true,
+            edit_replace: false,
+            presets: Vec::new(),
+            music_verify: true,
+            spotify_app: false,
+            vk_search: false,
+            yandex_acc: false,
+            odesli_key: String::new(),
         }
     }
 }
@@ -212,6 +263,32 @@ impl Settings {
         self.recent_dirs.retain(|d| !d.eq_ignore_ascii_case(&dir));
         self.recent_dirs.insert(0, dir);
         self.recent_dirs.truncate(6);
+    }
+
+    /// Текущие значения полей, которые входят в пресет.
+    pub fn preset_values(&self) -> Map<String, Value> {
+        let Ok(Value::Object(all)) = serde_json::to_value(self) else { return Map::new() };
+        all.into_iter().filter(|(k, _)| PRESET_KEYS.contains(&k.as_str())).collect()
+    }
+
+    /// Те же настройки, но с подменёнными полями (неизвестные поля и неверные значения пропускаются).
+    pub fn with_values(&self, m: &Map<String, Value>) -> Settings {
+        let Ok(Value::Object(mut all)) = serde_json::to_value(self) else { return self.clone() };
+        for (k, v) in m {
+            if PRESET_KEYS.contains(&k.as_str()) {
+                all.insert(k.clone(), v.clone());
+            }
+        }
+        serde_json::from_value(Value::Object(all)).unwrap_or_else(|_| self.clone())
+    }
+
+    /// Настройки для одной ссылки: общие → пресет → свои значения ссылки.
+    pub fn for_job(&self, o: &JobOpts) -> Settings {
+        let base = match self.presets.iter().find(|p| p.name == o.preset) {
+            Some(p) if !o.preset.is_empty() => self.with_values(&p.values),
+            _ => self.clone(),
+        };
+        if o.over.is_empty() { base } else { base.with_values(&o.over) }
     }
 
     pub fn sub_lang_list(&self) -> Vec<String> {
