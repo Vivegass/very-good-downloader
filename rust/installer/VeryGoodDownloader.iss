@@ -36,6 +36,7 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "browser"; Description: "Запускать программу из расширения браузера (протокол vgd://)"; GroupDescription: "Браузер:"
+Name: "autostart"; Description: "Запускать в фоне при входе в Windows (кнопки «скачать» в браузере и Spotify срабатывают сразу)"; GroupDescription: "Запуск:"; Flags: unchecked
 
 [InstallDelete]
 ; Остатки Python-версии 1.0.x (PyInstaller): больше не нужны.
@@ -52,6 +53,8 @@ Root: HKCU; Subkey: "Software\Classes\vgd"; ValueType: string; ValueName: ""; Va
 Root: HKCU; Subkey: "Software\Classes\vgd"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Tasks: browser
 Root: HKCU; Subkey: "Software\Classes\vgd\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"",0"; Tasks: browser
 Root: HKCU; Subkey: "Software\Classes\vgd\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""; Tasks: browser
+; Запуск в фоне (в трее, без окна) при входе в Windows — та же запись, что ставит галочка в настройках программы.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "VeryGoodDownloader"; ValueData: """{app}\{#AppExe}"" --background"; Flags: uninsdeletevalue; Tasks: autostart
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"

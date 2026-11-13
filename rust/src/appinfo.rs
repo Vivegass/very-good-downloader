@@ -307,3 +307,57 @@ pub fn reveal(path: &Path) {
     c.arg(path);
     let _ = c.spawn();
 }
+
+/// Имя записи в `HKCU\...\Run`: запуск в фоне при входе в Windows.
+const AUTOSTART_KEY: &str = "VeryGoodDownloader";
+
+/// Включён ли запуск в фоне при входе в Windows (запись есть — неважно, кем поставлена:
+/// программой или установщиком).
+#[cfg(windows)]
+pub fn autostart() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    winreg::RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")
+        .and_then(|k| k.get_value::<String, _>(AUTOSTART_KEY))
+        .is_ok()
+}
+
+#[cfg(not(windows))]
+pub fn autostart() -> bool {
+    false
+}
+
+/// Запуск в фоне при входе в Windows: `"…\Very Good Downloader.exe" --background`.
+#[cfg(windows)]
+pub fn set_autostart(on: bool, exe: &Path) {
+    use winreg::enums::HKEY_CURRENT_USER;
+    let Ok((key, _)) = winreg::RegKey::predef(HKEY_CURRENT_USER).create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run") else { return };
+    if on {
+        let _ = key.set_value(AUTOSTART_KEY, &format!("\"{}\" --background", exe.display()));
+    } else {
+        let _ = key.delete_value(AUTOSTART_KEY);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_autostart(_on: bool, _exe: &Path) {}
+
+/// Запись автозапуска ведёт на программу, которой больше нет (переустановили в другую папку), —
+/// перевести её на этот exe.
+#[cfg(windows)]
+pub fn fix_autostart(exe: &Path) {
+    use winreg::enums::HKEY_CURRENT_USER;
+    let Ok(v) = winreg::RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")
+        .and_then(|k| k.get_value::<String, _>(AUTOSTART_KEY))
+    else {
+        return;
+    };
+    let old = v.trim_start_matches('"').split('"').next().unwrap_or("");
+    if !Path::new(old).is_file() {
+        set_autostart(true, exe);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn fix_autostart(_exe: &Path) {}
