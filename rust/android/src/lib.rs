@@ -160,6 +160,10 @@ pub struct JobInfo {
     pub error: String,
     pub notice: String,
     pub audio_only: bool,
+    /// загрузка из подписки (её ссылка)
+    pub sub_url: Option<String>,
+    /// параметры ссылки (JSON JobOpts: from, to, audio_only, split_tracks, preset, over…)
+    pub opts_json: String,
 }
 
 impl From<&Job> for JobInfo {
@@ -179,6 +183,8 @@ impl From<&Job> for JobInfo {
             error: j.error.clone(),
             notice: j.notice.clone(),
             audio_only: j.opts.audio_only,
+            sub_url: j.sub_url.clone(),
+            opts_json: serde_json::to_string(&j.opts).unwrap_or_default(),
         }
     }
 }
@@ -223,15 +229,77 @@ impl Core {
                 Outcome::Progress(_) => l.on_jobs(jobs_of(q)),
                 Outcome::Finished(id) => {
                     if let Some(j) = q.job(*id) {
+                        if j.state == State::Done {
+                            if let Some(url) = &j.sub_url {
+                                if subscription_checked(url, &j.title) {
+                                    q.set_settings(Settings::load());
+                                }
+                            }
+                        }
                         l.on_finished(JobInfo::from(j));
                     }
+                    save_queue(q);
                     l.on_jobs(jobs_of(q));
                 }
                 // Нить шлёт Idle последним действием и ещё не завершилась — смотрим только на карточки.
                 Outcome::Idle => l.on_idle(q.active()),
             }),
         );
-        Arc::new(Core { runner, listener })
+        // Очередь прошлого запуска (процесс могли закрыть посреди загрузки) — на паузе, «продолжить всё» докачает.
+        let restored = runner.with(|q| {
+            let saved = load_queue();
+            for s in &saved {
+                let id = q.add(s.url.clone(), s.opts.clone(), s.sub_url.clone(), Some(s.title.clone()).filter(|t| !t.is_empty()));
+                q.pause(id);
+            }
+            saved.len()
+        });
+        if restored > 0 {
+            listener.on_log(format!("Очередь прошлого запуска: {restored} — на паузе, «продолжить всё» докачает."));
+        }
+        let core = Arc::new(Core { runner, listener });
+        core.notify();
+        core
+    }
+
+    /// Поставить ссылку с параметрами (JSON `JobOpts`: from, to, audio_only, split_tracks, preset, over) и запустить.
+    pub fn add_with(&self, url: String, opts_json: String) -> Result<u64, VgdError> {
+        let opts: JobOpts = serde_json::from_str(&opts_json).map_err(|e| fail(format!("параметры: {e}")))?;
+        let id = self.runner.with(|q| {
+            let id = q.add(url.trim().to_string(), opts, None, None);
+            q.start();
+            id
+        });
+        self.notify();
+        Ok(id)
+    }
+
+    /// Проверить подписки (все или одну): новые видео/треки; при первой проверке — только запомнить, что есть.
+    /// Возвращает, сколько подписок поставлено в очередь.
+    pub fn check_subscriptions(&self, only_url: Option<String>) -> u32 {
+        let subs = Settings::load().subscriptions;
+        let n = self.runner.with(|q| {
+            let mut n = 0;
+            for sub in &subs {
+                if only_url.as_ref().is_some_and(|u| u != &sub.url) {
+                    continue;
+                }
+                // уже в очереди — не дублируем
+                if q.jobs.iter().any(|j| j.sub_url.as_deref() == Some(&sub.url) && j.state.is_active()) {
+                    continue;
+                }
+                let opts = JobOpts { audio_only: sub.audio_only, max_age_days: sub.max_age_days, seed_only: !sub.seeded, ..Default::default() };
+                let title = Some(sub.name.clone()).filter(|n| !n.is_empty());
+                q.add(sub.url.clone(), opts, Some(sub.url.clone()), title);
+                n += 1;
+            }
+            if n > 0 {
+                q.start();
+            }
+            n
+        });
+        self.notify();
+        n
     }
 
     /// Поставить ссылку в очередь и запустить. `audio_only` — только звук.
@@ -324,9 +392,143 @@ impl Core {
 impl Core {
     /// Изменение не от нити загрузки (пауза, порядок) — тоже сообщить экрану.
     fn notify(&self) {
-        let jobs = self.runner.with(|q| jobs_of(q));
+        let jobs = self.runner.with(|q| {
+            save_queue(q);
+            jobs_of(q)
+        });
         self.listener.on_jobs(jobs);
     }
+}
+
+// ---------- очередь между запусками ----------
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+struct SavedJob {
+    url: String,
+    title: String,
+    opts: JobOpts,
+    sub_url: Option<String>,
+}
+
+fn queue_file() -> PathBuf {
+    appinfo::data_dir().join("android_queue.json")
+}
+
+/// Незаконченные карточки — в файл (Android может закрыть процесс в любой момент).
+fn save_queue(q: &vgd_core::queue::Queue) {
+    let v: Vec<SavedJob> = q
+        .jobs
+        .iter()
+        .filter(|j| j.state.is_active())
+        .map(|j| SavedJob { url: j.url.clone(), title: j.title.clone(), opts: j.opts.clone(), sub_url: j.sub_url.clone() })
+        .collect();
+    if let Ok(t) = serde_json::to_string(&v) {
+        let _ = std::fs::write(queue_file(), t);
+    }
+}
+
+fn load_queue() -> Vec<SavedJob> {
+    std::fs::read_to_string(queue_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// Подписка проверена: запомнить, что «старое» учтено, время проверки, название. true — настройки изменились.
+fn subscription_checked(url: &str, title: &str) -> bool {
+    let mut s = Settings::load();
+    let Some(sub) = s.subscriptions.iter_mut().find(|x| x.url == url) else { return false };
+    sub.seeded = true;
+    sub.last_check = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    if sub.name.is_empty() && !title.starts_with("http") {
+        sub.name = title.to_string();
+    }
+    s.save();
+    true
+}
+
+// ---------- «Разложить папку», категории ----------
+
+/// Перенос файла: откуда → куда.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MovePlan {
+    pub from: String,
+    pub to: String,
+}
+
+/// План раскладки уже скачанных файлов в `root` по «Тема/Канал» (ничего не двигает). Долго — не из главной нити.
+#[uniffi::export]
+pub fn sort_plan(root: String) -> Result<Vec<MovePlan>, VgdError> {
+    let plan = vgd_core::downloader::plan_existing(std::path::Path::new(&root), &|_| {}, None).map_err(fail)?;
+    Ok(plan
+        .into_iter()
+        .map(|(a, b)| MovePlan { from: a.to_string_lossy().into_owned(), to: b.to_string_lossy().into_owned() })
+        .collect())
+}
+
+/// Разложить по плану. Возвращает, сколько файлов перенесено.
+#[uniffi::export]
+pub fn sort_apply(plan: Vec<MovePlan>) -> u32 {
+    let p: Vec<(PathBuf, PathBuf)> = plan.into_iter().map(|m| (PathBuf::from(m.from), PathBuf::from(m.to))).collect();
+    vgd_core::sort::apply_plan(&p, &|_| {}) as u32
+}
+
+/// Категория раскладки: название и ключевые слова.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Topic {
+    pub name: String,
+    pub keywords: Vec<String>,
+}
+
+#[uniffi::export]
+pub fn topics() -> Vec<Topic> {
+    vgd_core::sort::load_topics().into_iter().map(|(name, keywords)| Topic { name, keywords }).collect()
+}
+
+#[uniffi::export]
+pub fn save_topics(topics: Vec<Topic>) -> Result<(), VgdError> {
+    let t: vgd_core::sort::Topics = topics
+        .into_iter()
+        .filter(|t| !t.name.trim().is_empty())
+        .map(|t| (t.name.trim().to_string(), t.keywords.into_iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect()))
+        .collect();
+    vgd_core::sort::save_topics(&t).map_err(fail)
+}
+
+#[uniffi::export]
+pub fn default_topics() -> Vec<Topic> {
+    vgd_core::sort::default_topics().into_iter().map(|(name, keywords)| Topic { name, keywords }).collect()
+}
+
+// ---------- Яндекс Музыка: вход кодом ----------
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct YandexCode {
+    pub device_code: String,
+    /// код, который пользователь вводит на странице
+    pub user_code: String,
+    pub url: String,
+    pub interval: u64,
+    pub expires_in: u64,
+}
+
+#[uniffi::export]
+pub fn yandex_start() -> Result<YandexCode, VgdError> {
+    let d = vgd_core::yandex_acc::device_start().map_err(fail)?;
+    Ok(YandexCode { device_code: d.device_code, user_code: d.user_code, url: d.url, interval: d.interval, expires_in: d.expires_in })
+}
+
+/// true — вошли (токен сохранён), false — пользователь ещё не подтвердил.
+#[uniffi::export]
+pub fn yandex_poll(device_code: String) -> Result<bool, VgdError> {
+    vgd_core::yandex_acc::device_poll(&device_code).map_err(fail)
+}
+
+#[uniffi::export]
+pub fn yandex_logged_in() -> bool {
+    vgd_core::yandex_acc::logged_in()
+}
+
+#[uniffi::export]
+pub fn yandex_logout() {
+    vgd_core::yandex_acc::logout()
 }
 
 // ---------- yt-dlp ----------
@@ -582,6 +784,14 @@ mod tests {
         // тема не на M3 — роли из её цветов
         let sunset: serde_json::Value = serde_json::from_str(&theme_scheme_json("sunset".into(), true)).unwrap();
         assert!(sunset["onSurfaceVariant"].is_string());
+    }
+
+    #[test]
+    fn saved_job_roundtrip() {
+        let j = SavedJob { url: "https://a".into(), title: "А".into(), opts: JobOpts { audio_only: true, ..Default::default() }, sub_url: None };
+        let t = serde_json::to_string(&vec![j.clone()]).unwrap();
+        let back: Vec<SavedJob> = serde_json::from_str(&t).unwrap();
+        assert_eq!(back, vec![j]);
     }
 
     #[test]
