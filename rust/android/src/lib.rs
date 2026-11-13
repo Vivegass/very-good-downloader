@@ -23,21 +23,21 @@ uniffi::setup_scaffolding!();
 
 #[derive(Debug, uniffi::Error)]
 pub enum VgdError {
-    Failed { message: String },
+    Failed { reason: String },
 }
 
 impl std::fmt::Display for VgdError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VgdError::Failed { message } => f.write_str(message),
+            VgdError::Failed { reason } => f.write_str(reason),
         }
     }
 }
 
 impl std::error::Error for VgdError {}
 
-fn fail(message: impl Into<String>) -> VgdError {
-    VgdError::Failed { message: message.into() }
+fn fail(reason: impl Into<String>) -> VgdError {
+    VgdError::Failed { reason: reason.into() }
 }
 
 // ---------- запуск ----------
@@ -227,7 +227,8 @@ impl Core {
                     }
                     l.on_jobs(jobs_of(q));
                 }
-                Outcome::Idle => l.on_idle(q.active() || q.busy()),
+                // Нить шлёт Idle последним действием и ещё не завершилась — смотрим только на карточки.
+                Outcome::Idle => l.on_idle(q.active()),
             }),
         );
         Arc::new(Core { runner, listener })
@@ -311,7 +312,7 @@ impl Core {
 
     /// Что-то ждёт или качается.
     pub fn active(&self) -> bool {
-        self.runner.with(|q| q.active() || q.busy())
+        self.runner.with(|q| q.active())
     }
 
     /// Перечитать настройки после их изменения на экране.
@@ -389,6 +390,81 @@ pub fn vk_agent_js() -> String {
     vgd_core::vk::AGENT_JS.to_string()
 }
 
+// ---------- темы ----------
+
+/// Тема для выбора в настройках: встроенная или файл из папки тем (тот же JSON, что на ПК).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ThemeChoice {
+    /// ключ (как `Settings::theme`): "material", "sunset", "file:моя"
+    pub key: String,
+    pub name: String,
+    pub dark: bool,
+}
+
+#[uniffi::export]
+pub fn theme_list() -> Vec<ThemeChoice> {
+    use vgd_core::theme;
+    let mut v: Vec<ThemeChoice> = theme::builtins()
+        .into_iter()
+        .map(|(k, t)| ThemeChoice { key: k.to_string(), name: t.name.clone(), dark: !t.is_light() })
+        .collect();
+    for (stem, t) in theme::list_custom().0 {
+        v.push(ThemeChoice { key: format!("{}{stem}", theme::FILE_PREFIX), name: t.name.clone(), dark: !t.is_light() });
+    }
+    v
+}
+
+/// Роли Compose `ColorScheme` для темы (JSON: {"primary": "#rrggbb", …}).
+/// "material" — Material 3 с ПК: светлая или тёмная по системе (`system_dark`).
+/// У тем не на M3 роли подбираются из их цветов (акцент → primary, фон → background…).
+#[uniffi::export]
+pub fn theme_scheme_json(key: String, system_dark: bool) -> String {
+    use vgd_core::theme::{self, m3::Scheme};
+    let t = if key == "material" || key == "material-light" { theme::material(system_dark) } else { theme::load(&key) };
+    let s: Scheme = match &t.m3 {
+        Some(m) => m.roles(),
+        None => Scheme {
+            primary: t.accent,
+            on_primary: t.on_accent,
+            primary_container: t.selection,
+            on_primary_container: t.text,
+            inverse_primary: t.accent_hover,
+            secondary: t.accent_hover,
+            on_secondary: t.on_accent,
+            secondary_container: t.pill,
+            on_secondary_container: t.text,
+            tertiary: t.ok,
+            on_tertiary: t.bg,
+            tertiary_container: t.ok_bg,
+            on_tertiary_container: t.text,
+            background: t.bg,
+            on_background: t.text,
+            surface: t.bg,
+            on_surface: t.text,
+            surface_variant: t.surface_hi,
+            on_surface_variant: t.muted,
+            surface_tint: t.accent,
+            inverse_surface: t.text,
+            inverse_on_surface: t.bg,
+            error: t.err,
+            on_error: t.bg,
+            error_container: t.warn_bg,
+            on_error_container: t.text,
+            outline: t.border,
+            outline_variant: t.divider,
+            scrim: theme::Rgb([0, 0, 0]),
+            surface_bright: t.surface_hi,
+            surface_container: t.surface,
+            surface_container_high: t.window,
+            surface_container_highest: t.field,
+            surface_container_low: t.sidebar,
+            surface_container_lowest: t.bg,
+            surface_dim: t.bg,
+        },
+    };
+    serde_json::to_string(&s).unwrap_or_else(|_| "{}".into())
+}
+
 // ---------- ссылки ----------
 
 /// Найти ссылку в тексте «Поделиться» («Смотри: https://youtu.be/… — классно»).
@@ -415,6 +491,17 @@ mod tests {
         assert_eq!(extract_url("Смотри: https://youtu.be/abc?si=1 — классно".into()).as_deref(), Some("https://youtu.be/abc?si=1"));
         assert_eq!(extract_url("«https://music.yandex.ru/album/1»".into()).as_deref(), Some("https://music.yandex.ru/album/1"));
         assert_eq!(extract_url("нет ссылки".into()), None);
+    }
+
+    #[test]
+    fn material_scheme_follows_system() {
+        let dark: serde_json::Value = serde_json::from_str(&theme_scheme_json("material".into(), true)).unwrap();
+        let light: serde_json::Value = serde_json::from_str(&theme_scheme_json("material".into(), false)).unwrap();
+        assert!(dark["primary"].as_str().unwrap().starts_with('#'));
+        assert_ne!(dark["surface"], light["surface"]);
+        // тема не на M3 — роли из её цветов
+        let sunset: serde_json::Value = serde_json::from_str(&theme_scheme_json("sunset".into(), true)).unwrap();
+        assert!(sunset["onSurfaceVariant"].is_string());
     }
 
     #[test]

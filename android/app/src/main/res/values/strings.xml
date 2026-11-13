@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Very Good Downloader</string>
+    <string name="share_label">Скачать в Very Good Downloader</string>
+    <string name="share_added">Добавлено в очередь Very Good Downloader</string>
+    <string name="share_no_link">Нет ссылки для скачивания</string>
+    <string name="clip_no_link">В буфере обмена нет ссылки</string>
+    <string name="tile_label">Скачать из буфера</string>
+    <string name="ch_progress">Загрузки</string>
+    <string name="ch_done">Готово</string>
+    <string name="tab_download">Скачать</string>
+    <string name="tab_log">Журнал</string>
+    <string name="tab_settings">Настройки</string>
+</resources>

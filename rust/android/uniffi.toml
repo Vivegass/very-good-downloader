@@ -2,3 +2,6 @@
 [bindings.kotlin]
 package_name = "io.github.vivegass.vgd.core"
 cdylib_name = "vgd"
+
+# Android: проверка версии API для Cleaner (java.lang.ref.Cleaner есть только с Android 13)
+android = true
