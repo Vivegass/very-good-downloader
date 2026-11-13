@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- запрос «не оптимизировать батарею» (вне Google Play можно) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- «Доступ ко всем файлам»: обычные пути Download/…, раскладка по папкам (вне Google Play можно) -->
     <uses-permission
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
@@ -104,6 +106,18 @@
             android:noHistory="true"
             android:taskAffinity=""
             android:theme="@style/Theme.Vgd.Transparent" />
+
+        <!-- вход на vk.com / в YouTube в окне программы -->
+        <activity
+            android:name=".LoginActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- подписки по расписанию (WorkManager) работают как служба переднего плана dataSync -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
 
         <service
             android:name=".DownloadService"

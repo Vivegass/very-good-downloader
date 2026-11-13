@@ -58,6 +58,7 @@ object Vgd {
             try {
                 val paths = unpackTools(app)
                 io.github.vivegass.vgd.core.init(paths)
+                io.github.vivegass.vgd.core.setVkSearcher(VkAgent)
                 val c = Core(listener)
                 core = c
                 _ready.value = ""
@@ -109,6 +110,18 @@ object Vgd {
         Thread {
             try {
                 core().add(url, audioOnly)
+            } catch (e: Throwable) {
+                addLog("Ошибка: $e")
+            }
+        }.start()
+    }
+
+    /** С параметрами ссылки (JSON JobOpts: from, to, audio_only, split_tracks, preset). */
+    fun addWith(context: Context, url: String, optsJson: String) {
+        DownloadService.start(context)
+        Thread {
+            try {
+                core().addWith(url, optsJson)
             } catch (e: Throwable) {
                 addLog("Ошибка: $e")
             }

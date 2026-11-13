@@ -42,6 +42,8 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Subscriptions
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -77,6 +79,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -100,48 +110,104 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-private enum class Page(val label: Int) { Download(R.string.tab_download), Log(R.string.tab_log), Settings(R.string.tab_settings) }
+private enum class Page(val label: Int) { Download(R.string.tab_download), Subs(R.string.tab_subs), Log(R.string.tab_log), Settings(R.string.tab_settings) }
+
+private fun pageIcon(p: Page) = when (p) {
+    Page.Download -> Icons.Outlined.Download
+    Page.Subs -> Icons.Outlined.Subscriptions
+    Page.Log -> Icons.Outlined.Description
+    Page.Settings -> Icons.Outlined.Settings
+}
 
 @Composable
 fun App(style: String, onStyle: (String) -> Unit) {
     var page by rememberSaveable { mutableStateOf(Page.Download) }
+    val st = LocalVgdStyle.current
     val scroll = TopAppBarDefaults.pinnedScrollBehavior()
+    val jobs by Vgd.jobs.collectAsState()
+    val active = jobs.count { it.state == JobState.QUEUED || it.state == JobState.RUNNING }
+    fun label(p: Page, ctx: Context) = ctx.getString(p.label) + if (p == Page.Download && active > 0) " · $active" else ""
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
+        containerColor = screenBackground(),
         topBar = {
-            // Один и тот же заголовок на всех экранах (крупный раскрывался по-разному в зависимости от прокрутки).
-            TopAppBar(title = { Text(stringResource(page.label)) }, scrollBehavior = scroll)
+            val title = stringResource(page.label)
+            when (st.header) {
+                // Один и тот же заголовок на всех экранах (крупный раскрывался по-разному в зависимости от прокрутки).
+                Header.SMALL -> TopAppBar(title = { Text(title) }, scrollBehavior = scroll)
+                // iOS / HyperOS / HarmonyOS: крупный заголовок слева
+                Header.LARGE -> Text(
+                    title,
+                    style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.statusBarsPadding().padding(start = 20.dp, top = 12.dp, bottom = 8.dp),
+                )
+                // One UI: заголовок в верхней трети, содержимое ниже — под большой палец
+                Header.HUGE -> Box(
+                    Modifier.fillMaxWidth().statusBarsPadding().height(150.dp).padding(start = 24.dp, bottom = 20.dp),
+                    contentAlignment = Alignment.BottomStart,
+                ) {
+                    Text(title, style = MaterialTheme.typography.displaySmall)
+                }
+            }
         },
         bottomBar = {
-            NavigationBar {
-                val jobs by Vgd.jobs.collectAsState()
-                val active = jobs.count { it.state == JobState.QUEUED || it.state == JobState.RUNNING }
-                Page.entries.forEach { p ->
-                    NavigationBarItem(
-                        selected = page == p,
-                        onClick = { page = p },
-                        icon = {
-                            Icon(
-                                when (p) {
-                                    Page.Download -> Icons.Outlined.Download
-                                    Page.Log -> Icons.Outlined.Description
-                                    Page.Settings -> Icons.Outlined.Settings
-                                },
-                                contentDescription = null,
-                            )
-                        },
-                        label = { Text(stringResource(p.label) + if (p == Page.Download && active > 0) " · $active" else "") },
-                        colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                        ),
-                    )
+            val ctx = LocalContext.current
+            when (st.nav) {
+                Nav.BAR -> NavigationBar(
+                    containerColor = if (st.glass) MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceContainer,
+                ) {
+                    Page.entries.forEach { p ->
+                        NavigationBarItem(
+                            selected = page == p,
+                            onClick = { page = p },
+                            icon = { Icon(pageIcon(p), contentDescription = null) },
+                            label = { Text(label(p, ctx)) },
+                            colors = NavigationBarItemDefaults.colors(
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            ),
+                        )
+                    }
+                }
+                // плавающая панель-«таблетка» (One UI, HyperOS, iOS)
+                Nav.PILL -> Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (st.glass) 0.88f else 1f),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                        shadowElevation = 6.dp,
+                    ) {
+                        Row(Modifier.padding(horizontal = 6.dp, vertical = 6.dp)) {
+                            Page.entries.forEach { p ->
+                                val sel = page == p
+                                Surface(
+                                    onClick = { page = p },
+                                    shape = RoundedCornerShape(50),
+                                    color = if (sel) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                ) {
+                                    Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            pageIcon(p),
+                                            contentDescription = null,
+                                            tint = if (sel) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        Text(
+                                            label(p, ctx),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (sel) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         },
     ) { pad ->
         when (page) {
             Page.Download -> DownloadPage(pad)
+            Page.Subs -> SubsPage(pad)
             Page.Log -> LogPage(pad)
             Page.Settings -> SettingsPage(pad, style, onStyle)
         }
@@ -161,6 +227,12 @@ private fun DownloadPage(pad: PaddingValues) {
     val ready by Vgd.ready.collectAsState()
     var text by rememberSaveable { mutableStateOf("") }
     var audio by rememberSaveable { mutableStateOf(false) }
+    var showOpts by rememberSaveable { mutableStateOf(false) }
+    var from by rememberSaveable { mutableStateOf("") }
+    var to by rememberSaveable { mutableStateOf("") }
+    var split by rememberSaveable { mutableStateOf(false) }
+    var preset by rememberSaveable { mutableStateOf("") }
+    val presets = remember { runCatching { org.json.JSONObject(io.github.vivegass.vgd.core.settingsJson()).optJSONArray("presets") }.getOrNull() }
     var allFiles by remember { mutableStateOf(hasAllFiles(ctx)) }
     LifecycleResumeEffect(Unit) {
         allFiles = hasAllFiles(ctx)
@@ -177,7 +249,14 @@ private fun DownloadPage(pad: PaddingValues) {
     fun start() {
         val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
         val urls = lines.mapNotNull { io.github.vivegass.vgd.core.extractUrl(it) }
-        urls.forEach { Vgd.add(ctx, it, audio) }
+        // Параметры ссылки — как JobOpts на ПК (фрагмент «с … до …», только звук, микс → треки, пресет).
+        val opts = org.json.JSONObject()
+            .put("audio_only", audio)
+            .put("from", from.trim())
+            .put("to", to.trim())
+            .put("split_tracks", split)
+            .put("preset", preset)
+        urls.forEach { Vgd.addWith(ctx, it, opts.toString()) }
         if (urls.isNotEmpty()) text = ""
     }
 
@@ -206,11 +285,46 @@ private fun DownloadPage(pad: PaddingValues) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = audio, onCheckedChange = { audio = it })
-                Text("только звук", modifier = Modifier.weight(1f))
+                Text("только звук")
+                TextButton(onClick = { showOpts = !showOpts }) { Text(if (showOpts) "меньше" else "ещё…") }
+                Spacer(Modifier.weight(1f))
                 Button(onClick = { start() }, enabled = text.isNotBlank()) {
                     Icon(Icons.Filled.Download, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("скачать")
+                }
+            }
+        }
+        if (showOpts) {
+            item {
+                VgdCard {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("фрагмент (пусто — целиком)", style = MaterialTheme.typography.labelLarge)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(from, { from = it }, label = { Text("с 1:30") }, singleLine = true, modifier = Modifier.weight(1f))
+                            OutlinedTextField(to, { to = it }, label = { Text("до 2:45") }, singleLine = true, modifier = Modifier.weight(1f))
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = split, onCheckedChange = { split = it })
+                            Text("микс / альбом одним видео → отдельные треки")
+                        }
+                        if (presets != null && presets.length() > 0) {
+                            Text("пресет", style = MaterialTheme.typography.labelLarge)
+                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                (listOf("") + (0 until presets.length()).map { presets.getJSONObject(it).optString("name") }).forEach { name ->
+                                    FilterChip(
+                                        selected = preset == name,
+                                        onClick = { preset = name },
+                                        label = { Text(name.ifEmpty { "обычные настройки" }) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -240,6 +354,14 @@ private fun DownloadPage(pad: PaddingValues) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("очередь", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (jobs.any { it.state == JobState.PAUSED }) {
+                    TextButton(onClick = {
+                        io.github.vivegass.vgd.DownloadService.start(ctx)
+                        act { it.resumeAll() }
+                    }) { Text("продолжить всё") }
+                } else if (jobs.any { it.state == JobState.QUEUED || it.state == JobState.RUNNING }) {
+                    TextButton(onClick = { act { it.pauseAll() } }) { Text("пауза") }
+                }
                 if (jobs.any { it.state != JobState.QUEUED && it.state != JobState.RUNNING && it.state != JobState.PAUSED }) {
                     TextButton(onClick = { act { it.clearDone() } }) { Text("убрать готовые") }
                 }
@@ -264,7 +386,7 @@ private fun DownloadPage(pad: PaddingValues) {
 }
 
 /** Действие с очередью — не в главной нити (ядро могло ещё распаковываться). */
-private fun act(f: (io.github.vivegass.vgd.core.Core) -> Unit) {
+internal fun act(f: (io.github.vivegass.vgd.core.Core) -> Unit) {
     Thread {
         try {
             f(Vgd.core())
@@ -275,8 +397,8 @@ private fun act(f: (io.github.vivegass.vgd.core.Core) -> Unit) {
 }
 
 @Composable
-private fun Notice(text: String, button: String?, onClick: () -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+internal fun Notice(text: String, button: String?, onClick: () -> Unit) {
+    VgdCard(MaterialTheme.colorScheme.secondaryContainer) {
         Column(Modifier.padding(16.dp)) {
             Text(text, color = MaterialTheme.colorScheme.onSecondaryContainer)
             if (button != null) {
@@ -306,11 +428,7 @@ private fun stageName(s: String): String = when (s) {
 @Composable
 private fun JobCard(j: JobInfo, first: Boolean, last: Boolean) {
     val ctx = LocalContext.current
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-        shape = MaterialTheme.shapes.large,
-    ) {
+    VgdCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 8.dp)) {
             Text(j.title.ifEmpty { j.url }, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             val line = listOf(
@@ -375,12 +493,20 @@ private fun LogPage(pad: PaddingValues) {
     val state = rememberLazyListState()
     LaunchedEffect(shown.size) { if (shown.isNotEmpty()) state.scrollToItem(shown.size - 1) }
     Column(Modifier.fillMaxSize().padding(top = pad.calculateTopPadding(), bottom = pad.calculateBottomPadding())) {
+        val ctx = LocalContext.current
         OutlinedTextField(
             value = find,
             onValueChange = { find = it },
             label = { Text("поиск в журнале") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            trailingIcon = {
+                // отправить журнал (например, в Telegram — разобраться, что не скачалось)
+                IconButton(onClick = {
+                    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, shown.takeLast(500).joinToString("\n"))
+                    ctx.startActivity(Intent.createChooser(send, "журнал Very Good Downloader"))
+                }) { Icon(Icons.Filled.Share, contentDescription = "отправить журнал") }
+            },
         )
         SelectionContainer {
             LazyColumn(state = state, contentPadding = PaddingValues(16.dp), modifier = Modifier.fillMaxSize()) {
@@ -399,190 +525,13 @@ private fun LogPage(pad: PaddingValues) {
     }
 }
 
-// ---------- «Настройки» ----------
-
-@Composable
-private fun SettingsPage(pad: PaddingValues, style: String, onStyle: (String) -> Unit) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var json by remember { mutableStateOf<JSONObject?>(null) }
-    var rev by remember { mutableIntStateOf(0) }
-    var ytdlp by remember { mutableStateOf("…") }
-    var updating by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            try {
-                Vgd.core()
-                json = JSONObject(settingsJson())
-                ytdlp = ytdlpVersion() ?: "не найден"
-            } catch (e: Throwable) {
-                ytdlp = "ошибка: ${e.message}"
-            }
-        }
-    }
-    fun save(change: (JSONObject) -> Unit) {
-        val o = json ?: return
-        change(o)
-        rev++
-        scope.launch(Dispatchers.IO) {
-            try {
-                saveSettingsJson(o.toString())
-                Vgd.coreOrNull()?.reloadSettings()
-            } catch (e: Throwable) {
-                Vgd.addLog("Ошибка: настройки: ${e.message}")
-            }
-        }
-    }
-
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, top = pad.calculateTopPadding(), bottom = pad.calculateBottomPadding() + 16.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        val o = json
-        @Suppress("UNUSED_EXPRESSION") rev
-        if (o == null) {
-            Text("загружаю…")
-            return@Column
-        }
-        Section("Загрузки")
-        var dir by remember { mutableStateOf(o.optString("out_dir")) }
-        OutlinedTextField(
-            value = dir,
-            onValueChange = { dir = it },
-            label = { Text("папка") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            trailingIcon = {
-                TextButton(onClick = { save { it.put("out_dir", dir.trim().ifEmpty { Vgd.defaultDownloadDir().absolutePath }) } }) { Text("ок") }
-            },
-        )
-        TextButton(onClick = {
-            dir = Vgd.defaultDownloadDir().absolutePath
-            save { it.put("out_dir", dir) }
-        }) { Text("по умолчанию: Download/Very Good Downloader") }
-
-        Text("разрешение", style = MaterialTheme.typography.labelLarge)
-        Chips(listOf(0 to "макс", 2160 to "2160p", 1440 to "1440p", 1080 to "1080p", 720 to "720p", 480 to "480p"), o.optInt("max_height")) { v ->
-            save { it.put("max_height", v) }
-        }
-        Text("кадров в секунду", style = MaterialTheme.typography.labelLarge)
-        Chips(listOf(0 to "макс", 60 to "60", 30 to "30", 24 to "24"), o.optInt("max_fps")) { v -> save { it.put("max_fps", v) } }
-
-        Toggle("раскладывать по папкам «Тема / Канал»", o.optBoolean("sort")) { v -> save { it.put("sort", v) } }
-        Toggle("плейлисты и каналы целиком", o.optBoolean("playlist", true)) { v -> save { it.put("playlist", v) } }
-        Toggle("субтитры (${o.optString("sub_langs", "ru,en")})", o.optBoolean("subs")) { v -> save { it.put("subs", v) } }
-        Toggle("обложка .jpg рядом с видео", o.optBoolean("thumbnail", true)) { v -> save { it.put("thumbnail", v) } }
-
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Section("Оформление")
-        val themes = remember { runCatching { themeList() }.getOrDefault(emptyList()) }
-        val options = buildList {
-            add(Style.AUTO to "по марке телефона (${Style.brandName()}: Material You)")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add(Style.YOU to "Material You — цвета из обоев")
-            themes.forEach { add(Style.THEME_PREFIX + it.key to "тема с ПК: ${it.name}") }
-        }
-        options.forEach { (key, label) ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                androidx.compose.material3.RadioButton(selected = style == key, onClick = { onStyle(key) })
-                Text(label)
-            }
-        }
-
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Section("yt-dlp")
-        Text("версия: $ytdlp", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        FilledTonalButton(enabled = !updating, onClick = {
-            updating = true
-            scope.launch(Dispatchers.IO) {
-                ytdlp = try {
-                    updateYtdlp()
-                } catch (e: Throwable) {
-                    Vgd.addLog("Ошибка: обновление yt-dlp: ${e.message}")
-                    ytdlpVersion() ?: "?"
-                }
-                updating = false
-            }
-        }) { Text(if (updating) "обновляю…" else "обновить yt-dlp") }
-        Text(
-            "YouTube регулярно ломает старые версии yt-dlp — если видео перестали качаться, обновите.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Section("Проверка")
-        var checking by remember { mutableStateOf(false) }
-        Text(
-            "yt-dlp, кодеки и фильтры ffmpeg, форматы YouTube с QuickJS и без — результат в «Журнале».",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        FilledTonalButton(enabled = !checking, onClick = {
-            checking = true
-            scope.launch(Dispatchers.IO) {
-                Vgd.addLog("Проверка: ролик 240p (Me at the zoo) и ролик 4K (Big Buck Bunny)…")
-                try {
-                    Vgd.core()
-                    for (url in listOf("https://www.youtube.com/watch?v=jNQXAC9IVRw", "https://www.youtube.com/watch?v=aqz-KE-bpKQ")) {
-                        Vgd.addLog("— $url")
-                        io.github.vivegass.vgd.core.diagnose(url).forEach { Vgd.addLog(it) }
-                    }
-                } catch (e: Throwable) {
-                    Vgd.addLog("Ошибка: проверка: ${e.message}")
-                }
-                checking = false
-            }
-        }) { Text(if (checking) "проверяю…" else "проверить") }
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Text(
-            "Very Good Downloader для Android ${io.github.vivegass.vgd.BuildConfig.VERSION_NAME} · ядро ${io.github.vivegass.vgd.core.version()} · yt-dlp $ytdlp\n${ctx.packageName}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-private fun Section(title: String) {
-    Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 8.dp))
-}
-
-@Composable
-private fun Toggle(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
-    var v by remember(value) { mutableStateOf(value) }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Text(label, modifier = Modifier.weight(1f))
-        Switch(checked = v, onCheckedChange = { v = it; onChange(it) })
-    }
-}
-
-@Composable
-private fun Chips(options: List<Pair<Int, String>>, value: Int, onChange: (Int) -> Unit) {
-    var v by remember(value) { mutableIntStateOf(value) }
-    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        options.forEach { (k, label) ->
-            FilterChip(
-                selected = v == k,
-                onClick = { v = k; onChange(k) },
-                label = { Text(label) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                ),
-            )
-        }
-    }
-}
-
 /**
  * Как сделать «Поделиться» в одно нажатие. Свой ряд приложений в панели YouTube составляет сам YouTube
  * (туда сторонние приложения не попадают); в системной панели («Ещё») приложение можно закрепить сверху.
  */
 @Composable
 private fun ShareHint() {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+    VgdCard(MaterialTheme.colorScheme.primaryContainer) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Скачивать прямо из YouTube", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
             Text(

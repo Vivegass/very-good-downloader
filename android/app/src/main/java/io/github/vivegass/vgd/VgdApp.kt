@@ -6,6 +6,7 @@ class VgdApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Vgd.attach(this)
+        VkAgent.attach(this)
         Notifications.ensureChannels(this)
         Shortcuts.publish(this)
         // Распаковка Python/ffmpeg (первый запуск — несколько секунд) — сразу в фоне,

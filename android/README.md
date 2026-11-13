@@ -63,8 +63,12 @@ Debug-сборка ставится как отдельное приложени
 | `ClipTileService.kt` + `ClipActivity.kt` | плитка в шторке «Скачать из буфера» |
 | `DownloadService.kt` | служба переднего плана `dataSync`: прогресс, WakeLock + WifiLock, `onTimeout` (Android 15) → пауза |
 | `Notifications.kt` | уведомления прогресса и «скачано / не скачалось» |
-| `ui/App.kt` | экраны «Скачать», «Журнал», «Настройки» |
-| `ui/Theme.kt` | стиль по марке (сейчас — Material You у всех), темы с ПК → `ColorScheme` |
+| `Shortcuts.kt`, `res/xml/shortcuts.xml` | ярлыки «Видео» / «Звук»: Direct Share в «Поделиться» и на значке приложения |
+| `VkAgent.kt`, `LoginActivity.kt` | VK: скрытый WebView с `vk_agent.js` (поиск), окно входа VK / YouTube (→ `cookies.txt`) |
+| `SubsWorker.kt` | подписки раз в 6 ч по Wi-Fi (WorkManager, служба dataSync) |
+| `ui/App.kt` | каркас (заголовок, навигация по стилю), «Скачать», «Журнал» |
+| `ui/Subs.kt`, `ui/Settings.kt` | «Подписки»; «Настройки» (загрузки, монтаж, музыка, аккаунты, папка, оформление, телефон, yt-dlp, проверка) |
+| `ui/Theme.kt` | стиль по марке (Material You / One UI / HyperOS / HarmonyOS / iOS — `VgdStyle`), темы с ПК → `ColorScheme` |
 | `../rust/android/src/lib.rs` | что видит Kotlin: `init`, настройки JSON, `Core` (очередь), темы, `diagnose`, VK, yt-dlp |
 
 yt-dlp запускается как у youtubedl-android: `libpython.so <noBackupFilesDir>/youtubedl-android/yt-dlp/yt-dlp

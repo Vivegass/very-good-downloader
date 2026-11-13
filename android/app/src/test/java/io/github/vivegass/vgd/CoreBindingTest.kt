@@ -76,6 +76,25 @@ class CoreBindingTest {
         core.pause(id)
         core.clearDone()
         assertTrue(core.jobs().size <= 1)
+
+        // параметры ссылки (фрагмент, микс → треки) доходят до ядра
+        val id2 = core.addWith("https://www.youtube.com/watch?v=x", """{"from":"1:30","to":"2:45","split_tracks":true}""")
+        val j2 = core.jobs().first { it.id == id2 }
+        val opts = JSONObject(j2.optsJson)
+        assertEquals("1:30", opts.getString("from"))
+        assertTrue(opts.getBoolean("split_tracks"))
+        core.pause(id2)
+        // незаконченное сохраняется на случай, если Android закроет процесс
+        assertTrue(File(tmp, "data/android_queue.json").isFile)
+
+        // категории раскладки
+        val t = io.github.vivegass.vgd.core.topics()
+        assertTrue(t.isNotEmpty())
+        io.github.vivegass.vgd.core.saveTopics(t.take(1))
+        assertEquals(1, io.github.vivegass.vgd.core.topics().size)
+        // «Разложить папку»: пустая папка — пустой план
+        File(tmp, "dl").mkdirs()
+        assertTrue(io.github.vivegass.vgd.core.sortPlan(File(tmp, "dl").absolutePath).isEmpty())
         tmp.deleteRecursively()
     }
 }

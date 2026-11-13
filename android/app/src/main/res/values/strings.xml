@@ -15,6 +15,7 @@
     <string name="ch_progress">Загрузки</string>
     <string name="ch_done">Готово</string>
     <string name="tab_download">Скачать</string>
+    <string name="tab_subs">Подписки</string>
     <string name="tab_log">Журнал</string>
     <string name="tab_settings">Настройки</string>
 </resources>

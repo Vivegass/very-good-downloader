@@ -19,8 +19,8 @@ android {
         applicationId = "io.github.vivegass.vgd"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
         ndk { abiFilters += abis }
     }
 
@@ -134,6 +134,8 @@ dependencies {
     implementation("androidx.sharetarget:sharetarget:1.2.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // подписки по расписанию
+    implementation("androidx.work:work-runtime-ktx:2.10.5")
 
     // yt-dlp + Python, ffmpeg, QuickJS — официальные сборки youtubedl-android (Maven Central)
     val ytdl = "0.18.1"
