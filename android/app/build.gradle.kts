@@ -19,8 +19,8 @@ android {
         applicationId = "io.github.vivegass.vgd"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
         ndk { abiFilters += abis }
     }
 
@@ -50,6 +50,9 @@ android {
     packaging {
         jniLibs { useLegacyPackaging = true }
     }
+
+    // скриншот-тесты (Robolectric + Roborazzi): ресурсы Android нужны и на JVM
+    testOptions { unitTests { isIncludeAndroidResources = true } }
 
     sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("rustJniLibs"))
     sourceSets["main"].java.srcDir(layout.buildDirectory.dir("generated/uniffi"))
@@ -118,6 +121,10 @@ val cargoHost by tasks.registering(Exec::class) {
 tasks.withType<Test>().configureEach {
     dependsOn(cargoHost)
     systemProperty("jna.library.path", rustDir.resolve("target/android").absolutePath)
+    // скриншоты стилей: -Pvgd.screens=<папка> (по умолчанию build/screens)
+    systemProperty("roborazzi.test.record", "true")
+    systemProperty("vgd.screens", (project.findProperty("vgd.screens") as String?) ?: layout.buildDirectory.dir("screens").get().asFile.absolutePath)
+    maxHeapSize = "3g"
 }
 
 dependencies {
@@ -148,4 +155,11 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("net.java.dev.jna:jna:5.18.1")
     testImplementation("org.json:json:20250517")
+    // скриншоты экранов во всех стилях без телефона и эмулятора
+    testImplementation(composeBom)
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.75.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.75.0")
 }

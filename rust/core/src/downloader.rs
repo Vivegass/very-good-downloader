@@ -44,6 +44,8 @@ pub struct Progress {
     pub files: Vec<String>,
     /// важное для пользователя (например, «Spotify отдал только 100 треков») — показывается в очереди
     pub notice: String,
+    /// превью видео / обложка трека (ссылка) — для карточки в очереди
+    pub thumb: String,
 }
 
 #[derive(Debug)]
@@ -511,6 +513,7 @@ impl Downloader {
         };
         let title = str_of(&info, &["title"]);
         self.p.title = title.clone();
+        self.p.thumb = thumb_of(&info);
         // Подписка «не старше N дней»: старое пропускаем и запоминаем, чтобы не проверять снова.
         if self.opts.max_age_days > 0 {
             if let Some(age) = upload_age_days(&str_of(&info, &["upload_date"])) {
@@ -1188,6 +1191,15 @@ fn read_lines(pipe: Box<dyn Read + Send>, is_err: bool, tx: mpsc::Sender<(bool, 
     if !buf.is_empty() {
         let _ = tx.send((is_err, String::from_utf8_lossy(&buf).into_owned()));
     }
+}
+
+/// Превью для карточки: у YouTube — небольшое (320×180), у остальных — что дал сайт.
+pub fn thumb_of(info: &Value) -> String {
+    let id = str_of(info, &["id"]);
+    if str_of(info, &["extractor_key", "ie_key"]).eq_ignore_ascii_case("youtube") && !id.is_empty() {
+        return format!("https://i.ytimg.com/vi/{id}/mqdefault.jpg");
+    }
+    str_of(info, &["thumbnail"])
 }
 
 // ---------- мелочи ----------

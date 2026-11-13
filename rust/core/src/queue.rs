@@ -61,6 +61,8 @@ pub struct Job {
     pub opts: JobOpts,
     /// загрузка из подписки (её ссылка)
     pub sub_url: Option<String>,
+    /// превью / обложка (ссылка), если загрузчик её узнал
+    pub thumb: String,
 }
 
 /// Что сообщают рабочие нити.
@@ -176,6 +178,7 @@ impl Queue {
             notice: String::new(),
             opts,
             sub_url,
+            thumb: String::new(),
         });
         self.sync();
         id
@@ -372,6 +375,9 @@ impl Queue {
                     j.message = p.message.clone();
                     if !p.notice.is_empty() {
                         j.notice = p.notice.clone();
+                    }
+                    if !p.thumb.is_empty() {
+                        j.thumb = p.thumb.clone();
                     }
                 }
                 Outcome::Progress(id)

@@ -13,36 +13,59 @@ import android.provider.DocumentsContract
 import android.provider.Settings as AndroidSettings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.AutoFixHigh
+import androidx.compose.material.icons.rounded.BatteryChargingFull
+import androidx.compose.material.icons.rounded.Category
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ColorLens
+import androidx.compose.material.icons.rounded.ContentCut
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.DriveFileMove
+import androidx.compose.material.icons.rounded.FactCheck
+import androidx.compose.material.icons.rounded.FindReplace
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.FolderSpecial
+import androidx.compose.material.icons.rounded.FormatListNumbered
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.Lyrics
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.People
+import androidx.compose.material.icons.rounded.PlaylistPlay
+import androidx.compose.material.icons.rounded.SlowMotionVideo
+import androidx.compose.material.icons.rounded.SmartDisplay
+import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -53,7 +76,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import io.github.vivegass.vgd.BuildConfig
@@ -83,30 +109,339 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 
-/** Настройки — тот же settings.json, что на ПК (поля по именам из rust/core/src/settings.rs). */
+/** Что показывают настройки помимо settings.json (состояние телефона и аккаунтов). */
+data class SettingsEnv(
+    val ytdlp: String = "…",
+    val updating: Boolean = false,
+    val checking: Boolean = false,
+    val vkLogged: Boolean = false,
+    val yaLogged: Boolean = false,
+    val yaCode: String? = null,
+    val hasCookies: Boolean = false,
+    val battery: Boolean = false,
+    /** темы с ПК: ключ, название, цвет акцента */
+    val themes: List<Triple<String, String, Color>> = emptyList(),
+    val version: String = "",
+)
+
+/** Действия настроек (на телефоне — системные окна и ядро; в скриншот-тестах — ничего). */
+interface SettingsHandler {
+    fun save(change: (JSONObject) -> Unit) {}
+    fun pickFolder() {}
+    fun vkLogin() {}
+    fun yandex() {}
+    fun youtubeLogin() {}
+    fun pickCookies() {}
+    fun clearCookies() {}
+    fun battery() {}
+    fun updateYtdlp() {}
+    fun check() {}
+    fun sortFolder() {}
+    fun topics() {}
+}
+
+private val HEIGHTS = listOf(0 to "Максимальное", 2160 to "2160p (4K)", 1440 to "1440p", 1080 to "1080p", 720 to "720p", 480 to "480p")
+private val MUSIC = listOf("best" to "Как есть", "mp3" to "MP3 320", "m4a" to "M4A", "flac" to "FLAC")
+
+/** Путь короче: /storage/emulated/0/Download/X → Download/X. */
+private fun shortPath(p: String) = p.removePrefix(Environment.getExternalStorageDirectory().absolutePath).trimStart('/').ifEmpty { p }
+
+/** Маленький образец стиля для листа выбора: форма карточки и цвет марки. */
 @Composable
-internal fun SettingsPage(pad: PaddingValues, style: String, onStyle: (String) -> Unit) {
+private fun StylePreview(style: String, dark: Boolean) {
+    val s = styleOf(style)
+    val scheme = brandScheme(if (style == Style.YOU) Style.HARMONY else style, dark)
+    val accent = when (style) {
+        Style.YOU -> MaterialTheme.colorScheme.primary
+        else -> scheme.primary
+    }
+    Box(
+        Modifier.size(44.dp, 30.dp).clip(RoundedCornerShape((s.groupRadius.value / 2.4f).dp))
+            .background(if (style == Style.YOU) MaterialTheme.colorScheme.primaryContainer else scheme.surfaceContainer)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape((s.groupRadius.value / 2.4f).dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.size(18.dp, 8.dp).clip(RoundedCornerShape(4.dp)).background(accent))
+    }
+}
+
+@Composable
+private fun Swatch(c: Color) {
+    Box(Modifier.size(26.dp).clip(RoundedCornerShape(50)).background(c).border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(50)))
+}
+
+@Composable
+fun SettingsContent(
+    o: JSONObject?,
+    env: SettingsEnv,
+    h: SettingsHandler,
+    style: String,
+    colors: String,
+    onStyle: (String) -> Unit,
+    onColors: (String) -> Unit,
+    nav: @Composable () -> Unit,
+) {
+    var rev by remember { mutableIntStateOf(0) }
+    var sheet by remember { mutableStateOf<String?>(null) }
+    var spotify by remember { mutableStateOf(false) }
+    fun save(change: (JSONObject) -> Unit) {
+        val obj = o ?: return
+        change(obj)
+        rev++
+        h.save(change)
+    }
+    val dark = MaterialTheme.colorScheme.isDark()
+    VgdScaffold(title = "Настройки", bottomBar = nav) { inner ->
+        @Suppress("UNUSED_EXPRESSION") rev
+        LazyColumn(
+            contentPadding = PaddingValues(top = inner.calculateTopPadding(), bottom = inner.calculateBottomPadding() + 24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            if (o == null) {
+                item { Text("Загружаю…", modifier = Modifier.padding(24.dp)) }
+                return@LazyColumn
+            }
+            item(key = "dl") {
+                Group("Загрузки") {
+                    nav("Папка", value = shortPath(o.optString("out_dir")), icon = Icons.Rounded.Folder, tint = Tint.BLUE) { h.pickFolder() }
+                    nav("Качество видео", value = HEIGHTS.firstOrNull { it.first == o.optInt("max_height") }?.second ?: "${o.optInt("max_height")}p", icon = Icons.Rounded.HighQuality, tint = Tint.RED) { sheet = "height" }
+                    custom {
+                        val fps = listOf(0, 60, 30, 24)
+                        Column {
+                            KitRow("Кадров в секунду", subtitle = "Если такой частоты нет — пересчёт", icon = Icons.Rounded.SlowMotionVideo, tint = Tint.ORANGE)
+                            KitSegmented(
+                                listOf("Макс.", "60", "30", "24"),
+                                fps.indexOf(o.optInt("max_fps")).coerceAtLeast(0),
+                                { i -> save { it.put("max_fps", fps[i]) } },
+                                Modifier.padding(start = rowPad(), end = rowPad(), bottom = 12.dp),
+                            )
+                        }
+                    }
+                    toggle("Раскладывать по папкам", o.optBoolean("sort"), "Тема / Канал", Icons.Rounded.FolderSpecial, Tint.ORANGE) { v -> save { it.put("sort", v) } }
+                    toggle("Плейлисты и каналы целиком", o.optBoolean("playlist", true), icon = Icons.Rounded.PlaylistPlay, tint = Tint.PURPLE) { v -> save { it.put("playlist", v) } }
+                    toggle("Субтитры", o.optBoolean("subs"), o.optString("sub_langs", "ru,en").replace(",", ", "), Icons.Rounded.Subtitles, Tint.GRAY) { v -> save { it.put("subs", v) } }
+                    toggle("Обложка рядом с видео", o.optBoolean("thumbnail", true), icon = Icons.Rounded.Image, tint = Tint.TEAL) { v -> save { it.put("thumbnail", v) } }
+                    toggle("Вырезать спонсорские вставки", o.optBoolean("sponsorblock"), "SponsorBlock", Icons.Rounded.ContentCut, Tint.GREEN) { v -> save { it.put("sponsorblock", v) } }
+                    toggle("Разбивать по главам", o.optBoolean("split_chapters"), icon = Icons.Rounded.ViewAgenda, tint = Tint.INDIGO) { v -> save { it.put("split_chapters", v) } }
+                    toggle("Файл «_откуда скачано.txt»", o.optBoolean("source_log", true), "Ссылки рядом с файлами", Icons.Rounded.Description, Tint.GRAY) { v -> save { it.put("source_log", v) } }
+                }
+            }
+            item(key = "edit") {
+                val h264 = o.optString("edit", "none") == "h264"
+                Group("Копия для монтажа", footer = "H.264 MP4 + AAC для After Effects и Premiere: VP9, AV1 и Opus они не открывают. ProRes на телефоне не делаем — медленно, телефон греется.") {
+                    toggle("Копия H.264", h264, icon = Icons.Rounded.Movie, tint = Tint.PINK) { v -> save { it.put("edit", if (v) "h264" else "none") } }
+                    toggle("Вместо оригинала", o.optBoolean("edit_replace"), "MKV не остаётся", Icons.Rounded.SwapHoriz, Tint.ORANGE, enabled = h264) { v -> save { it.put("edit_replace", v) } }
+                }
+            }
+            item(key = "music") {
+                val replace = !o.optBoolean("music_no_replace")
+                val hasKey = o.optString("spotify_id").isNotBlank() && o.optString("spotify_secret").isNotBlank()
+                Group("Музыка") {
+                    nav("Формат", value = MUSIC.firstOrNull { it.first == o.optString("music_format", "best") }?.second ?: "Как есть", icon = Icons.Rounded.MusicNote, tint = Tint.PINK) { sheet = "music" }
+                    toggle("Номер трека в имени файла", o.optBoolean("music_numbers", true), icon = Icons.Rounded.FormatListNumbered, tint = Tint.BLUE) { v -> save { it.put("music_numbers", v) } }
+                    toggle("Искать замену недоступным", replace, "На YouTube Music, SoundCloud и других", Icons.Rounded.FindReplace, Tint.ORANGE) { v -> save { it.put("music_no_replace", !v) } }
+                    toggle("Замены — в отдельную папку", o.optBoolean("music_replace_dir"), "«_из других мест»", Icons.Rounded.DriveFileMove, Tint.GRAY, enabled = replace) { v -> save { it.put("music_replace_dir", v) } }
+                    toggle("Проверять замену по звуку", o.optBoolean("music_verify", true), "Сравнение с образцом Deezer", Icons.Rounded.GraphicEq, Tint.PURPLE) { v -> save { it.put("music_verify", v) } }
+                    toggle("Тексты песен", o.optBoolean("lyrics"), "LRCLIB, с таймингом — .lrc рядом", Icons.Rounded.Lyrics, Tint.TEAL) { v -> save { it.put("lyrics", v) } }
+                    nav("Ключ Spotify", value = if (hasKey) "Задан" else "Не задан", subtitle = "Без ключа — первые 100 треков плейлиста", icon = Icons.Rounded.Key, tint = Tint.GREEN) { spotify = true }
+                }
+            }
+            item(key = "acc") {
+                Group("Аккаунты", footer = "Пароли программа не видит: вход — на страницах самих сервисов.") {
+                    nav("VK", value = if (env.vkLogged) "Вход выполнен" else "Войти", icon = Icons.Rounded.People, tint = Tint.BLUE) { h.vkLogin() }
+                    toggle(
+                        "Искать музыку в VK первым",
+                        o.optBoolean("vk_search") && env.vkLogged,
+                        if (env.vkLogged) "Звук прямо из VK" else "Сначала войдите в VK",
+                        enabled = env.vkLogged,
+                    ) { v -> save { it.put("vk_search", v) } }
+                    nav(
+                        "Яндекс Музыка",
+                        value = when {
+                            env.yaCode != null -> "Код ${env.yaCode}"
+                            env.yaLogged -> "Вход выполнен"
+                            else -> "Войти по коду"
+                        },
+                        subtitle = env.yaCode?.let { "Введите код на ya.ru/device" },
+                        icon = Icons.Rounded.Album,
+                        tint = Tint.YELLOW,
+                    ) { h.yandex() }
+                    if (env.yaLogged) {
+                        toggle("Звук прямо с Яндекса", o.optBoolean("yandex_acc"), "FLAC и поиск замены там") { v -> save { it.put("yandex_acc", v) } }
+                    }
+                    nav("YouTube", value = if (env.hasCookies) "Куки есть" else "Без входа", subtitle = "Для 18+ и закрытых видео", icon = Icons.Rounded.SmartDisplay, tint = Tint.RED) { sheet = "youtube" }
+                }
+            }
+            item(key = "folder") {
+                Group("Папка загрузок") {
+                    nav("Разложить папку", subtitle = "По «Тема / Канал» — сначала покажу план", icon = Icons.Rounded.AutoFixHigh, tint = Tint.INDIGO) { h.sortFolder() }
+                    nav("Категории", subtitle = "Ключевые слова тем", icon = Icons.Rounded.Category, tint = Tint.ORANGE) { h.topics() }
+                }
+            }
+            item(key = "look") {
+                val colorsLabel = when {
+                    colors == Palette.WALLPAPER -> "Из обоев"
+                    colors.startsWith(Palette.THEME_PREFIX) -> env.themes.firstOrNull { it.first == colors.removePrefix(Palette.THEME_PREFIX) }?.second ?: "Тема с ПК"
+                    else -> "Как в стиле"
+                }
+                Group("Оформление") {
+                    nav(
+                        "Стиль",
+                        value = if (style == Style.AUTO) "По марке (${Style.label(Style.brandStyle())})" else Style.label(style),
+                        icon = Icons.Rounded.Palette,
+                        tint = Tint.PURPLE,
+                    ) { sheet = "style" }
+                    nav("Цвета", value = colorsLabel, icon = Icons.Rounded.ColorLens, tint = Tint.PINK) { sheet = "colors" }
+                }
+            }
+            item(key = "phone") {
+                Group("Телефон") {
+                    nav(
+                        "Не оптимизировать батарею",
+                        value = if (env.battery) "Готово" else null,
+                        subtitle = if (env.battery) "Система не остановит долгие загрузки" else "Чтобы система не останавливала долгие загрузки",
+                        icon = Icons.Rounded.BatteryChargingFull,
+                        tint = Tint.GREEN,
+                        enabled = !env.battery,
+                    ) { h.battery() }
+                }
+            }
+            item(key = "ytdlp") {
+                Group("yt-dlp", footer = "YouTube регулярно ломает старые версии yt-dlp — если видео перестали качаться, обновите.") {
+                    nav(if (env.updating) "Обновляю…" else "Обновить yt-dlp", value = env.ytdlp, icon = Icons.Rounded.SystemUpdate, tint = Tint.BLUE, enabled = !env.updating) { h.updateYtdlp() }
+                    nav(if (env.checking) "Проверяю…" else "Проверка", subtitle = "yt-dlp, ffmpeg, форматы YouTube — результат в «Журнале»", icon = Icons.Rounded.FactCheck, tint = Tint.GREEN, enabled = !env.checking) { h.check() }
+                }
+            }
+            item(key = "ver") {
+                Text(
+                    env.version,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+                )
+            }
+        }
+    }
+
+    // ---------- листы выбора ----------
+    val obj = o ?: return
+    when (sheet) {
+        "height" -> ChoiceSheet(
+            "Качество видео",
+            HEIGHTS.map { Choice(it.first.toString(), it.second, if (it.first == 0) "Лучшее, что есть у ролика" else null) },
+            obj.optInt("max_height").toString(),
+            onSelect = { k -> save { it.put("max_height", k.toInt()) }; sheet = null },
+            onDismiss = { sheet = null },
+        )
+        "music" -> ChoiceSheet(
+            "Формат музыки",
+            MUSIC.map { Choice(it.first, it.second, if (it.first == "best") "Без перекодирования (обычно Opus или M4A)" else null) },
+            obj.optString("music_format", "best"),
+            onSelect = { k -> save { it.put("music_format", k) }; sheet = null },
+            onDismiss = { sheet = null },
+        )
+        "style" -> ChoiceSheet(
+            "Стиль",
+            listOf(Choice(Style.AUTO, "По марке телефона", "${Style.brandName()}: ${Style.label(Style.brandStyle())}")) +
+                Style.ALL.map { k -> Choice(k, Style.label(k), Style.hint(k)) { StylePreview(k, dark) } },
+            style,
+            onSelect = { onStyle(it); sheet = null },
+            onDismiss = { sheet = null },
+        )
+        "colors" -> ChoiceSheet(
+            "Цвета",
+            buildList {
+                add(Choice(Palette.AUTO, "Как в стиле", "Material You — из обоев, у марок — фирменные"))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add(Choice(Palette.WALLPAPER, "Из обоев", "Material You для любого стиля"))
+                env.themes.forEach { (k, name, c) -> add(Choice(Palette.THEME_PREFIX + k, name, "Тема с ПК") { Swatch(c) }) }
+            },
+            colors,
+            onSelect = { onColors(it); sheet = null },
+            onDismiss = { sheet = null },
+        )
+        "youtube" -> ChoiceSheet(
+            "YouTube",
+            buildList {
+                add(Choice("login", "Войти в Google", "Во встроенном браузере; Google может не пустить"))
+                add(Choice("file", "Выбрать cookies.txt", "Выгрузите на ПК расширением «Get cookies.txt»"))
+                if (env.hasCookies) add(Choice("clear", "Убрать куки"))
+            },
+            "",
+            onSelect = { k ->
+                sheet = null
+                when (k) {
+                    "login" -> h.youtubeLogin()
+                    "file" -> h.pickCookies()
+                    "clear" -> h.clearCookies()
+                }
+            },
+            onDismiss = { sheet = null },
+        )
+    }
+    if (spotify) {
+        var id by remember { mutableStateOf(obj.optString("spotify_id")) }
+        var secret by remember { mutableStateOf(obj.optString("spotify_secret")) }
+        AlertDialog(
+            onDismissRequest = { spotify = false },
+            title = { Text("Ключ Spotify") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("developer.spotify.com → Dashboard → Create app. Без ключа Spotify отдаёт только первые 100 треков плейлиста.", style = MaterialTheme.typography.bodySmall)
+                    KitTextField(id, { id = it }, "Client ID", singleLine = true)
+                    KitTextField(secret, { secret = it }, "Client secret", singleLine = true)
+                }
+            },
+            confirmButton = {
+                KitButton("Сохранить", {
+                    save { it.put("spotify_id", id.trim()); it.put("spotify_secret", secret.trim()) }
+                    spotify = false
+                }, kind = Btn.TEXT)
+            },
+            dismissButton = { KitButton("Отмена", { spotify = false }, kind = Btn.TEXT) },
+        )
+    }
+}
+
+// ---------- на телефоне: данные и системные окна ----------
+
+@Composable
+internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: String, onStyle: (String) -> Unit, onColors: (String) -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var json by remember { mutableStateOf<JSONObject?>(null) }
-    var rev by remember { mutableIntStateOf(0) }
-    var ytdlp by remember { mutableStateOf("…") }
-    var updating by remember { mutableStateOf(false) }
+    var env by remember { mutableStateOf(SettingsEnv(vkLogged = VkAgent.loggedIn(), hasCookies = LoginActivity.cookiesFile(ctx).isFile, battery = ignoresBattery(ctx))) }
+    var plan by remember { mutableStateOf<List<MovePlan>?>(null) }
+    var topicsOpen by remember { mutableStateOf(false) }
+    val dark = MaterialTheme.colorScheme.isDark()
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             try {
                 Vgd.core()
                 json = JSONObject(settingsJson())
-                ytdlp = ytdlpVersion() ?: "не найден"
+                val themes = runCatching {
+                    themeList().map { t -> Triple(t.key, t.name, runCatching { schemeOfTheme(t.key, dark).primary }.getOrDefault(Color.Gray)) }
+                }.getOrDefault(emptyList())
+                env = env.copy(
+                    ytdlp = ytdlpVersion() ?: "не найден",
+                    yaLogged = runCatching { yandexLoggedIn() }.getOrDefault(false),
+                    themes = themes,
+                    version = "Very Good Downloader для Android ${BuildConfig.VERSION_NAME} · ядро ${io.github.vivegass.vgd.core.version()}\n${ctx.packageName}",
+                )
             } catch (e: Throwable) {
-                ytdlp = "ошибка: ${e.message}"
+                env = env.copy(ytdlp = "ошибка: ${e.message}")
             }
         }
     }
-    fun save(change: (JSONObject) -> Unit) {
+    LifecycleResumeEffect(Unit) {
+        env = env.copy(battery = ignoresBattery(ctx), vkLogged = VkAgent.loggedIn(), hasCookies = LoginActivity.cookiesFile(ctx).isFile)
+        onPauseOrDispose { }
+    }
+    val cookies = LoginActivity.cookiesFile(ctx)
+    fun saveNow(change: (JSONObject) -> Unit) {
         val o = json ?: return
         change(o)
-        rev++
         scope.launch(Dispatchers.IO) {
             try {
                 saveSettingsJson(o.toString())
@@ -116,137 +451,96 @@ internal fun SettingsPage(pad: PaddingValues, style: String, onStyle: (String) -
             }
         }
     }
-
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, top = pad.calculateTopPadding(), bottom = pad.calculateBottomPadding() + 16.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        val o = json
-        @Suppress("UNUSED_EXPRESSION") rev
-        if (o == null) {
-            Text("загружаю…")
-            return@Column
+    fun useCookies() = saveNow {
+        it.put("cookies", "file")
+        it.put("cookies_file", cookies.absolutePath)
+    }
+    val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        val p = uri?.let { treeToPath(it) } ?: return@rememberLauncherForActivityResult
+        saveNow { it.put("out_dir", p) }
+    }
+    val vkLogin = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { env = env.copy(vkLogged = VkAgent.loggedIn()) }
+    val ytLogin = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        env = env.copy(hasCookies = cookies.isFile)
+        if (cookies.isFile) useCookies()
+    }
+    val pickCookies = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        try {
+            cookies.parentFile?.mkdirs()
+            ctx.contentResolver.openInputStream(uri)?.use { inp -> cookies.outputStream().use { inp.copyTo(it) } }
+            env = env.copy(hasCookies = true)
+            useCookies()
+            Vgd.addLog("YouTube: cookies.txt загружен")
+        } catch (e: Exception) {
+            Vgd.addLog("Ошибка: cookies.txt: ${e.message}")
+        }
+    }
+    val handler = object : SettingsHandler {
+        override fun save(change: (JSONObject) -> Unit) = saveNow {}
+        override fun pickFolder() = pickFolder.launch(null)
+        override fun vkLogin() = vkLogin.launch(LoginActivity.intent(ctx, LoginActivity.VK))
+        override fun youtubeLogin() = ytLogin.launch(LoginActivity.intent(ctx, LoginActivity.YOUTUBE))
+        override fun pickCookies() = pickCookies.launch(arrayOf("text/plain", "*/*"))
+        override fun clearCookies() {
+            cookies.delete()
+            env = env.copy(hasCookies = false)
+            saveNow { it.put("cookies", "none") }
         }
 
-        // ---------- загрузки ----------
-        Section("Загрузки")
-        FolderRow(o.optString("out_dir")) { dir -> save { it.put("out_dir", dir) } }
-        Text("разрешение", style = MaterialTheme.typography.labelLarge)
-        Chips(listOf(0 to "макс", 2160 to "2160p", 1440 to "1440p", 1080 to "1080p", 720 to "720p", 480 to "480p"), o.optInt("max_height")) { v ->
-            save { it.put("max_height", v) }
-        }
-        Text("кадров в секунду (если такого нет — пересчёт)", style = MaterialTheme.typography.labelLarge)
-        Chips(listOf(0 to "макс", 60 to "60", 30 to "30", 24 to "24"), o.optInt("max_fps")) { v -> save { it.put("max_fps", v) } }
-        Toggle("раскладывать по папкам «Тема / Канал»", o.optBoolean("sort")) { v -> save { it.put("sort", v) } }
-        Toggle("плейлисты и каналы целиком", o.optBoolean("playlist", true)) { v -> save { it.put("playlist", v) } }
-        Toggle("субтитры (${o.optString("sub_langs", "ru,en")})", o.optBoolean("subs")) { v -> save { it.put("subs", v) } }
-        Toggle("обложка .jpg рядом с видео", o.optBoolean("thumbnail", true)) { v -> save { it.put("thumbnail", v) } }
-        Toggle("вырезать спонсорские вставки (SponsorBlock)", o.optBoolean("sponsorblock")) { v -> save { it.put("sponsorblock", v) } }
-        Toggle("разбивать видео по главам", o.optBoolean("split_chapters")) { v -> save { it.put("split_chapters", v) } }
-        Toggle("«_откуда скачано.txt» рядом с файлами", o.optBoolean("source_log", true)) { v -> save { it.put("source_log", v) } }
-
-        // ---------- копия для монтажа ----------
-        Section("Копия для монтажа")
-        Text(
-            "H.264 MP4 + AAC для After Effects / Premiere (VP9/AV1/Opus они не открывают). На телефоне — только H.264 " +
-                "(ProRes скрыт: медленно, телефон греется).",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        val edit = if (o.optString("edit", "none") == "h264") 1 else 0
-        Chips(listOf(0 to "не делать", 1 to "H.264"), edit) { v -> save { it.put("edit", if (v == 1) "h264" else "none") } }
-        if (edit == 1) {
-            Toggle("сохранять копию вместо оригинала (MKV не остаётся)", o.optBoolean("edit_replace")) { v -> save { it.put("edit_replace", v) } }
-        }
-
-        // ---------- музыка ----------
-        Section("Музыка")
-        Text("формат", style = MaterialTheme.typography.labelLarge)
-        val formats = listOf("best", "mp3", "m4a", "flac")
-        Chips(listOf(0 to "как есть", 1 to "mp3 320", 2 to "m4a", 3 to "flac"), formats.indexOf(o.optString("music_format", "best")).coerceAtLeast(0)) { v ->
-            save { it.put("music_format", formats[v]) }
-        }
-        Toggle("номер трека в имени файла", o.optBoolean("music_numbers", true)) { v -> save { it.put("music_numbers", v) } }
-        Toggle("искать замену недоступным трекам", !o.optBoolean("music_no_replace")) { v -> save { it.put("music_no_replace", !v) } }
-        Toggle("замены — в папку «_из других мест»", o.optBoolean("music_replace_dir")) { v -> save { it.put("music_replace_dir", v) } }
-        Toggle("проверять замену по звуку (Deezer)", o.optBoolean("music_verify", true)) { v -> save { it.put("music_verify", v) } }
-        Toggle("тексты песен (LRCLIB)", o.optBoolean("lyrics")) { v -> save { it.put("lyrics", v) } }
-        Text(
-            "Spotify отдаёт без ключа только первые 100 треков плейлиста. Ключ — developer.spotify.com → Create app.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        KeyField("Spotify Client ID", o.optString("spotify_id")) { v -> save { it.put("spotify_id", v) } }
-        KeyField("Spotify Client secret", o.optString("spotify_secret")) { v -> save { it.put("spotify_secret", v) } }
-
-        // ---------- аккаунты ----------
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Accounts(o, ::save)
-
-        // ---------- папка ----------
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Section("Папка загрузок")
-        SortExisting(o.optString("out_dir"))
-        TopicsEditor()
-
-        // ---------- оформление ----------
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Section("Оформление")
-        val themes = remember { runCatching { themeList() }.getOrDefault(emptyList()) }
-        val options = buildList {
-            add(Style.AUTO to "по марке телефона (${Style.brandName()}: ${Style.label(Style.brandStyle())})")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add(Style.YOU to "Material You — цвета из обоев")
-            Style.BRANDS.forEach { (k, label) -> add(k to label) }
-            themes.forEach { add(Style.THEME_PREFIX + it.key to "тема с ПК: ${it.name}") }
-        }
-        options.forEach { (key, label) ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                RadioButton(selected = style == key, onClick = { onStyle(key) })
-                Text(label)
+        @SuppressLint("BatteryLife")
+        override fun battery() {
+            try {
+                ctx.startActivity(Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + ctx.packageName)))
+            } catch (_: Exception) {
+                ctx.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             }
         }
 
-        // ---------- телефон ----------
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Section("Телефон")
-        BatteryRow()
-
-        // ---------- yt-dlp ----------
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Section("yt-dlp")
-        Text("версия: $ytdlp", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        FilledTonalButton(enabled = !updating, onClick = {
-            updating = true
+        override fun yandex() {
+            if (env.yaLogged) {
+                yandexLogout()
+                env = env.copy(yaLogged = false)
+                saveNow { it.put("yandex_acc", false) }
+                return
+            }
+            if (env.yaCode != null) return
             scope.launch(Dispatchers.IO) {
-                ytdlp = try {
-                    updateYtdlp()
+                try {
+                    val d = yandexStart()
+                    env = env.copy(yaCode = d.userCode)
+                    withContext(Dispatchers.Main) { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(d.url))) } }
+                    val end = System.currentTimeMillis() + d.expiresIn.toLong() * 1000
+                    while (System.currentTimeMillis() < end) {
+                        delay(d.interval.toLong() * 1000)
+                        if (yandexPoll(d.deviceCode)) {
+                            env = env.copy(yaLogged = true)
+                            break
+                        }
+                    }
+                } catch (e: Throwable) {
+                    Vgd.addLog("Ошибка: вход в Яндекс: ${e.message}")
+                }
+                env = env.copy(yaCode = null)
+                if (env.yaLogged) saveNow { it.put("yandex_acc", true) }
+            }
+        }
+
+        override fun updateYtdlp() {
+            env = env.copy(updating = true)
+            scope.launch(Dispatchers.IO) {
+                val v = try {
+                    io.github.vivegass.vgd.core.updateYtdlp()
                 } catch (e: Throwable) {
                     Vgd.addLog("Ошибка: обновление yt-dlp: ${e.message}")
                     ytdlpVersion() ?: "?"
                 }
-                updating = false
+                env = env.copy(updating = false, ytdlp = v)
             }
-        }) { Text(if (updating) "обновляю…" else "обновить yt-dlp") }
-        Text(
-            "YouTube регулярно ломает старые версии yt-dlp — если видео перестали качаться, обновите.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        }
 
-        // ---------- проверка ----------
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Section("Проверка")
-        var checking by remember { mutableStateOf(false) }
-        Text(
-            "yt-dlp, кодеки и фильтры ffmpeg, форматы YouTube с QuickJS и без — результат в «Журнале».",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        FilledTonalButton(enabled = !checking, onClick = {
-            checking = true
+        override fun check() {
+            env = env.copy(checking = true)
             scope.launch(Dispatchers.IO) {
                 Vgd.addLog("Проверка: ролик 240p (Me at the zoo) и ролик 4K (Big Buck Bunny)…")
                 try {
@@ -258,16 +552,33 @@ internal fun SettingsPage(pad: PaddingValues, style: String, onStyle: (String) -
                 } catch (e: Throwable) {
                     Vgd.addLog("Ошибка: проверка: ${e.message}")
                 }
-                checking = false
+                env = env.copy(checking = false)
             }
-        }) { Text(if (checking) "проверяю…" else "проверить") }
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Text(
-            "Very Good Downloader для Android ${BuildConfig.VERSION_NAME} · ядро ${io.github.vivegass.vgd.core.version()} · yt-dlp $ytdlp\n${ctx.packageName}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        }
+
+        override fun sortFolder() {
+            val root = json?.optString("out_dir") ?: return
+            scope.launch(Dispatchers.IO) {
+                plan = try {
+                    Vgd.core()
+                    sortPlan(root).ifEmpty {
+                        Vgd.addLog("Разложить: в корне папки нет неразложенных видео, скачанных программой.")
+                        null
+                    }
+                } catch (e: Throwable) {
+                    Vgd.addLog("Ошибка: разложить: ${e.message}")
+                    null
+                }
+            }
+        }
+
+        override fun topics() {
+            topicsOpen = true
+        }
     }
+    SettingsContent(json, env, handler, style, colors, onStyle, onColors, nav)
+    plan?.let { p -> SortDialog(p, json?.optString("out_dir").orEmpty()) { plan = null } }
+    if (topicsOpen) TopicsDialog { topicsOpen = false }
 }
 
 // ---------- папка: системный выбор ----------
@@ -280,313 +591,77 @@ internal fun treeToPath(uri: Uri): String? {
     return if (rel.isEmpty()) root else "$root/$rel"
 }
 
-@Composable
-private fun FolderRow(current: String, onChange: (String) -> Unit) {
-    var dir by remember(current) { mutableStateOf(current) }
-    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        val p = uri?.let { treeToPath(it) } ?: return@rememberLauncherForActivityResult
-        dir = p
-        onChange(p)
-    }
-    OutlinedTextField(
-        value = dir,
-        onValueChange = { dir = it },
-        label = { Text("папка") },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-        trailingIcon = {
-            TextButton(onClick = { onChange(dir.trim().ifEmpty { Vgd.defaultDownloadDir().absolutePath }) }) { Text("ок") }
-        },
-    )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(onClick = { pick.launch(null) }) { Text("выбрать…") }
-        TextButton(onClick = {
-            dir = Vgd.defaultDownloadDir().absolutePath
-            onChange(dir)
-        }) { Text("по умолчанию") }
-    }
-}
-
-// ---------- батарея ----------
-
-@SuppressLint("BatteryLife")
-@Composable
-private fun BatteryRow() {
-    val ctx = LocalContext.current
-    var ignoring by remember { mutableStateOf(ignoresBattery(ctx)) }
-    LifecycleResumeEffect(Unit) {
-        ignoring = ignoresBattery(ctx)
-        onPauseOrDispose { }
-    }
-    Text(
-        if (ignoring) "Оптимизация батареи для приложения выключена — система не остановит долгую загрузку."
-        else "Чтобы система не останавливала долгие загрузки (особенно Xiaomi, Huawei, Samsung), выключите для приложения оптимизацию батареи.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    if (!ignoring) {
-        FilledTonalButton(onClick = {
-            try {
-                ctx.startActivity(Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + ctx.packageName)))
-            } catch (_: Exception) {
-                ctx.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-            }
-        }) { Text("не оптимизировать батарею") }
-    }
-}
-
 internal fun ignoresBattery(ctx: Context): Boolean =
     (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(ctx.packageName)
-
-// ---------- аккаунты ----------
-
-@Composable
-private fun Accounts(o: JSONObject, save: ((JSONObject) -> Unit) -> Unit) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    Section("Аккаунты")
-
-    // VK: вход на vk.com в окне программы, поиск — скрытый WebView
-    var vkLogged by remember { mutableStateOf(VkAgent.loggedIn()) }
-    val vkLogin = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { vkLogged = VkAgent.loggedIn() }
-    Text("VK: " + if (vkLogged) "вход выполнен" else "нет входа", style = MaterialTheme.typography.titleSmall)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        FilledTonalButton(onClick = { vkLogin.launch(LoginActivity.intent(ctx, LoginActivity.VK)) }) { Text(if (vkLogged) "открыть vk.com" else "войти в VK") }
-    }
-    Toggle("искать музыку в VK первым (звук прямо из VK)", o.optBoolean("vk_search")) { v -> save { it.put("vk_search", v) } }
-
-    // Яндекс: вход кодом (ya.ru/device)
-    var yaLogged by remember { mutableStateOf(runCatching { yandexLoggedIn() }.getOrDefault(false)) }
-    var yaCode by remember { mutableStateOf<String?>(null) }
-    Text("Яндекс Музыка: " + if (yaLogged) "вход выполнен" else "нет входа", style = MaterialTheme.typography.titleSmall)
-    if (yaCode != null) {
-        Notice("Откройте ya.ru/device и введите код: $yaCode (латиницей). Жду подтверждения…", null) {}
-    }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (!yaLogged) {
-            FilledTonalButton(enabled = yaCode == null, onClick = {
-                scope.launch(Dispatchers.IO) {
-                    try {
-                        val d = yandexStart()
-                        yaCode = d.userCode
-                        withContext(Dispatchers.Main) {
-                            runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(d.url))) }
-                        }
-                        val end = System.currentTimeMillis() + d.expiresIn.toLong() * 1000
-                        while (System.currentTimeMillis() < end) {
-                            delay(d.interval.toLong() * 1000)
-                            if (yandexPoll(d.deviceCode)) {
-                                yaLogged = true
-                                break
-                            }
-                        }
-                    } catch (e: Throwable) {
-                        Vgd.addLog("Ошибка: вход в Яндекс: ${e.message}")
-                    }
-                    yaCode = null
-                    if (yaLogged) save { it.put("yandex_acc", true) }
-                }
-            }) { Text("войти в Яндекс") }
-        } else {
-            OutlinedButton(onClick = {
-                yandexLogout()
-                yaLogged = false
-                save { it.put("yandex_acc", false) }
-            }) { Text("выйти") }
-        }
-    }
-    if (yaLogged) {
-        Toggle("звук прямо с Яндекса и поиск замены там", o.optBoolean("yandex_acc")) { v -> save { it.put("yandex_acc", v) } }
-    }
-
-    // YouTube: куки для 18+ и закрытых видео (только при повторе — с куки YouTube отдаёт урезанные форматы)
-    val cookies = LoginActivity.cookiesFile(ctx)
-    var hasCookies by remember { mutableStateOf(cookies.isFile) }
-    fun useCookies() = save {
-        it.put("cookies", "file")
-        it.put("cookies_file", cookies.absolutePath)
-    }
-    val ytLogin = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        hasCookies = cookies.isFile
-        if (hasCookies) useCookies()
-    }
-    val pickCookies = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        try {
-            cookies.parentFile?.mkdirs()
-            ctx.contentResolver.openInputStream(uri)?.use { inp -> cookies.outputStream().use { inp.copyTo(it) } }
-            hasCookies = true
-            useCookies()
-            Vgd.addLog("YouTube: cookies.txt загружен")
-        } catch (e: Exception) {
-            Vgd.addLog("Ошибка: cookies.txt: ${e.message}")
-        }
-    }
-    Text("YouTube (18+, закрытые): " + if (hasCookies) "куки есть" else "без входа", style = MaterialTheme.typography.titleSmall)
-    Text(
-        "Куки берутся только при повторе, если видео требует входа. Google может не пустить во встроенный браузер — " +
-            "тогда выгрузите cookies.txt на ПК (расширение «Get cookies.txt») и выберите файл.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        FilledTonalButton(onClick = { ytLogin.launch(LoginActivity.intent(ctx, LoginActivity.YOUTUBE)) }) { Text("войти") }
-        OutlinedButton(onClick = { pickCookies.launch(arrayOf("text/plain", "*/*")) }) { Text("cookies.txt…") }
-        if (hasCookies) {
-            TextButton(onClick = {
-                cookies.delete()
-                hasCookies = false
-                save { it.put("cookies", "none") }
-            }) { Text("убрать") }
-        }
-    }
-}
 
 // ---------- «Разложить папку» ----------
 
 @Composable
-private fun SortExisting(root: String) {
+private fun SortDialog(p: List<MovePlan>, root: String, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var busy by remember { mutableStateOf(false) }
-    var plan by remember { mutableStateOf<List<MovePlan>?>(null) }
-    Text(
-        "Разложить уже скачанные видео (с [id] в имени или в теге) по папкам «Тема / Канал». Сначала — план.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    FilledTonalButton(enabled = !busy, onClick = {
-        busy = true
-        scope.launch(Dispatchers.IO) {
-            plan = try {
-                Vgd.core()
-                sortPlan(root)
-            } catch (e: Throwable) {
-                Vgd.addLog("Ошибка: разложить: ${e.message}")
-                null
-            }
-            if (plan?.isEmpty() == true) {
-                Vgd.addLog("Разложить: в корне папки нет неразложенных видео, скачанных программой.")
-                plan = null
-            }
-            busy = false
-        }
-    }) { Text(if (busy) "смотрю…" else "разложить папку…") }
-    val p = plan
-    if (p != null) {
-        AlertDialog(
-            onDismissRequest = { plan = null },
-            title = { Text("Разложить ${p.size} файл(ов)?") },
-            text = {
-                Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
-                    p.take(200).forEach { m ->
-                        Text(File(m.from).name + " → " + m.to.removePrefix(root).trimStart('/'), style = MaterialTheme.typography.bodySmall)
-                    }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Разложить ${p.size} файл(ов)?") },
+        text = {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                p.take(200).forEach { m ->
+                    Text(File(m.from).name + " → " + m.to.removePrefix(root).trimStart('/'), style = MaterialTheme.typography.bodySmall)
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    plan = null
-                    scope.launch(Dispatchers.IO) {
-                        val n = sortApply(p)
-                        Vgd.addLog("Разложено файлов: $n")
-                    }
-                }) { Text("разложить") }
-            },
-            dismissButton = { TextButton(onClick = { plan = null }) { Text("отмена") } },
-        )
-    }
+            }
+        },
+        confirmButton = {
+            KitButton("Разложить", {
+                onClose()
+                scope.launch(Dispatchers.IO) { Vgd.addLog("Разложено файлов: ${sortApply(p)}") }
+            }, kind = Btn.TEXT)
+        },
+        dismissButton = { KitButton("Отмена", onClose, kind = Btn.TEXT) },
+    )
 }
 
 // ---------- категории (topics.json) ----------
 
 @Composable
-private fun TopicsEditor() {
-    var open by remember { mutableStateOf(false) }
-    OutlinedButton(onClick = { open = true }) { Text("категории…") }
-    if (!open) return
+private fun TopicsDialog(onClose: () -> Unit) {
     var rows by remember { mutableStateOf(runCatching { topics() }.getOrDefault(emptyList()).map { it.name to it.keywords.joinToString(", ") }) }
     AlertDialog(
-        onDismissRequest = { open = false },
+        onDismissRequest = onClose,
         title = { Text("Категории") },
         text = {
-            Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    "Тема видео — по ключевым словам (название ×3, плейлист ×4, теги, ник канала). Выше — важнее.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Тема видео — по ключевым словам (название ×3, плейлист ×4, теги, ник канала). Выше — важнее.", style = MaterialTheme.typography.bodySmall)
                 rows.forEachIndexed { i, (name, kw) ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            OutlinedTextField(name, { v -> rows = rows.toMutableList().also { it[i] = v to kw } }, label = { Text("название") }, singleLine = true)
-                            OutlinedTextField(kw, { v -> rows = rows.toMutableList().also { it[i] = name to v } }, label = { Text("ключевые слова через запятую") })
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            KitTextField(name, { v -> rows = rows.toMutableList().also { it[i] = v to kw } }, "Название", singleLine = true)
+                            KitTextField(kw, { v -> rows = rows.toMutableList().also { it[i] = name to v } }, "Ключевые слова через запятую")
                         }
-                        IconButton(onClick = { rows = rows.toMutableList().also { it.removeAt(i) } }) { Icon(Icons.Filled.Close, contentDescription = "убрать") }
+                        IconButton(onClick = { rows = rows.toMutableList().also { it.removeAt(i) } }) { Icon(Icons.Rounded.Close, contentDescription = "Убрать") }
                     }
                 }
                 Row {
-                    TextButton(onClick = { rows = rows + ("" to "") }) { Text("добавить") }
-                    TextButton(onClick = { rows = defaultTopics().map { it.name to it.keywords.joinToString(", ") } }) { Text("как было") }
+                    KitButton("Добавить", { rows = rows + ("" to "") }, kind = Btn.TEXT)
+                    KitButton("Как было", { rows = defaultTopics().map { it.name to it.keywords.joinToString(", ") } }, kind = Btn.TEXT)
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = {
+            KitButton("Сохранить", {
                 try {
                     saveTopics(rows.map { (n, k) -> Topic(n, k.split(',').map { it.trim() }.filter { it.isNotEmpty() }) })
                 } catch (e: Throwable) {
                     Vgd.addLog("Ошибка: категории: ${e.message}")
                 }
-                open = false
-            }) { Text("сохранить") }
+                onClose()
+            }, kind = Btn.TEXT)
         },
-        dismissButton = { TextButton(onClick = { open = false }) { Text("отмена") } },
+        dismissButton = { KitButton("Отмена", onClose, kind = Btn.TEXT) },
     )
 }
 
-// ---------- общие элементы ----------
-
-@Composable
-internal fun Section(title: String) {
-    Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 8.dp))
-}
-
+/** Строка-переключатель вне группы (подписки). */
 @Composable
 internal fun Toggle(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
     var v by remember(value) { mutableStateOf(value) }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Text(label, modifier = Modifier.weight(1f))
-        Spacer(Modifier.width(8.dp))
-        Switch(checked = v, onCheckedChange = { v = it; onChange(it) })
-    }
-}
-
-@Composable
-internal fun Chips(options: List<Pair<Int, String>>, value: Int, onChange: (Int) -> Unit) {
-    var v by remember(value) { mutableIntStateOf(value) }
-    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        options.forEach { (k, label) ->
-            FilterChip(
-                selected = v == k,
-                onClick = { v = k; onChange(k) },
-                label = { Text(label) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                ),
-            )
-        }
-    }
-}
-
-@Composable
-private fun KeyField(label: String, value: String, onSave: (String) -> Unit) {
-    var v by remember(value) { mutableStateOf(value) }
-    OutlinedTextField(
-        value = v,
-        onValueChange = { v = it },
-        label = { Text(label) },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-        trailingIcon = { if (v != value) TextButton(onClick = { onSave(v.trim()) }) { Text("ок") } },
-    )
+    KitRow(label, onClick = { v = !v; onChange(v) }) { KitSwitch(v) }
 }

@@ -43,7 +43,7 @@ class LoginActivity : ComponentActivity() {
         val start = if (site == VK) "https://vk.com/" else
             "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F"
         setContent {
-            VgdTheme(Style.pref(this)) {
+            VgdTheme(Style.pref(this), Style.colors(this)) {
                 Scaffold(
                     topBar = {
                         TopAppBar(

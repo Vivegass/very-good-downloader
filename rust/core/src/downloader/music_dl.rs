@@ -167,6 +167,10 @@ impl Downloader {
         if list.tracks.is_empty() {
             return fail("В ссылке нет треков (плейлист пустой или закрыт).");
         }
+        if let Some(c) = list.tracks.iter().find_map(|t| t.cover.clone()) {
+            self.p.thumb = c;
+            self.emit();
+        }
         if let Some(n) = &list.note {
             self.log(format!("Внимание: {n}"));
             self.p.notice = n.clone();

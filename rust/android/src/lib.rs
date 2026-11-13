@@ -164,6 +164,8 @@ pub struct JobInfo {
     pub sub_url: Option<String>,
     /// параметры ссылки (JSON JobOpts: from, to, audio_only, split_tracks, preset, over…)
     pub opts_json: String,
+    /// превью видео / обложка (ссылка; пусто — ещё не известно)
+    pub thumb: String,
 }
 
 impl From<&Job> for JobInfo {
@@ -185,6 +187,7 @@ impl From<&Job> for JobInfo {
             audio_only: j.opts.audio_only,
             sub_url: j.sub_url.clone(),
             opts_json: serde_json::to_string(&j.opts).unwrap_or_default(),
+            thumb: j.thumb.clone(),
         }
     }
 }
@@ -250,6 +253,9 @@ impl Core {
             let saved = load_queue();
             for s in &saved {
                 let id = q.add(s.url.clone(), s.opts.clone(), s.sub_url.clone(), Some(s.title.clone()).filter(|t| !t.is_empty()));
+                if let Some(j) = q.jobs.iter_mut().find(|j| j.id == id) {
+                    j.thumb = s.thumb.clone();
+                }
                 q.pause(id);
             }
             saved.len()
@@ -414,6 +420,8 @@ struct SavedJob {
     title: String,
     opts: JobOpts,
     sub_url: Option<String>,
+    #[serde(default)]
+    thumb: String,
 }
 
 fn queue_file() -> PathBuf {
@@ -426,7 +434,7 @@ fn save_queue(q: &vgd_core::queue::Queue) {
         .jobs
         .iter()
         .filter(|j| j.state.is_active())
-        .map(|j| SavedJob { url: j.url.clone(), title: j.title.clone(), opts: j.opts.clone(), sub_url: j.sub_url.clone() })
+        .map(|j| SavedJob { url: j.url.clone(), title: j.title.clone(), opts: j.opts.clone(), sub_url: j.sub_url.clone(), thumb: j.thumb.clone() })
         .collect();
     if let Ok(t) = serde_json::to_string(&v) {
         let _ = std::fs::write(queue_file(), t);
@@ -798,7 +806,10 @@ mod tests {
 
     #[test]
     fn saved_job_roundtrip() {
-        let j = SavedJob { url: "https://a".into(), title: "А".into(), opts: JobOpts { audio_only: true, ..Default::default() }, sub_url: None };
+        let j = SavedJob { url: "https://a".into(), title: "А".into(), opts: JobOpts { audio_only: true, ..Default::default() }, sub_url: None, thumb: String::new() };
+        // файл прошлой версии (без thumb) читается
+        let old: Vec<SavedJob> = serde_json::from_str(r#"[{"url":"u","title":"t","opts":{},"sub_url":null}]"#).unwrap();
+        assert_eq!(old[0].thumb, "");
         let t = serde_json::to_string(&vec![j.clone()]).unwrap();
         let back: Vec<SavedJob> = serde_json::from_str(&t).unwrap();
         assert_eq!(back, vec![j]);
