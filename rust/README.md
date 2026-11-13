@@ -25,7 +25,19 @@ Inno Setup 6, делает `release\VeryGoodDownloader-Setup-<версия>.exe`
 Для разработки: положить `yt-dlp.exe`, `ffmpeg.exe`, `deno.exe` в `rust\bin\` — программа из
 `target\release` найдёт их там. Тесты: `cargo test --lib`.
 
-## Как устроено (src/)
+## Раскладка (с 1.12: workspace для ПК и Android)
+
+| Папка | Что |
+|---|---|
+| `core/` (`vgd-core`) | ядро: загрузка, музыка, сортировка, настройки, темы, сеть, `http.rs` (ureq вместо curl.exe), `queue.rs` (очередь окна и телефона), `vk.rs` (поиск VK за trait) |
+| `desktop/` (`vgd`) | версия для Windows: `vgd-gui` (окно), `vgd` (консоль), `ipc.rs`, трей, Spotify, WebView2 (`vk_web.rs`); модули ядра доступны как `vgd::downloader` и т. п. |
+| `android/` (`vgd-android`) | `libvgd.so` для APK, обёртка UniFFI — см. `../android/README.md` |
+| `uniffi-bindgen/` | генератор Kotlin-обёртки (только для сборки APK) |
+
+`cargo build --release` и `cargo test --lib` в `rust/` собирают и проверяют только ПК-часть (`core` + `desktop`).
+Пути к инструментам на Android задаёт `appinfo::init(Paths)`; на Windows он не вызывается — всё как раньше.
+
+## Как устроено (core/src, desktop/src)
 
 - `downloader.rs` — по каждому видео: `yt-dlp -j` → тема/канал считаются в Rust и вписываются
   в сведения → `yt-dlp --load-info-json` по шаблону `%(sort_topic)s/%(sort_channel)s/…` →

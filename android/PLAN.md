@@ -198,6 +198,87 @@ Android 12+ тоже отдают Material You-палитру), иначе — �
 | Минимальная версия | **Android 8.0** | Android 10 |
 | Где код | **Этот репозиторий**, `android/` | Отдельный репозиторий |
 
+## Решения (13.11.2026, владелец заранее разрешил решать по рекомендации плана)
+
+| Вопрос | Решение | Почему / где в коде |
+|---|---|---|
+| Стиль по умолчанию | **По марке** (`Build.MANUFACTURER`/`BRAND`); на Pixel — Material You. Пока стилей марок нет (этап 6), все марки получают Material You; в настройках — «по марке», «Material You», любая тема с ПК | `android/app/.../ui/Theme.kt` (`Style.brandStyle`) |
+| Интерфейс | **Kotlin + Compose** (Material 3 1.4) | `android/` |
+| Доступ к файлам | **«Доступ ко всем файлам»** (`MANAGE_EXTERNAL_STORAGE`), запрос на главном экране; без него загрузка всё равно пробует писать в `Download/` | `ui/App.kt`, манифест |
+| ProRes на телефоне | **Скрыть** — в настройках телефона копии для монтажа пока нет вообще (этап 6: только H.264) | — |
+| Минимальная версия | **Android 8.0** (minSdk 26); targetSdk 36 | `app/build.gradle.kts` |
+| Где код | **Этот репозиторий**: `android/` (Gradle), `rust/` — workspace `core` / `desktop` / `android` / `uniffi-bindgen` | — |
+| Версии сборки | AGP 8.13.2, Kotlin 2.2.21, Gradle 8.14.7, Compose BOM 2025.12.01, NDK 28.2, UniFFI 0.32, youtubedl-android 0.18.1. AGP 9 не взят: другой DSL (встроенный Kotlin), выигрыша сейчас нет | `android/build.gradle.kts` |
+| Имя пакета | `io.github.vivegass.vgd` (debug — `.debug`, ставится рядом с будущим релизом) | — |
+| Откуда yt-dlp/ffmpeg/QuickJS | Официальные артефакты youtubedl-android с Maven Central (`io.github.junkfood02.youtubedl-android:library/ffmpeg:0.18.1` — их указывает README репозитория yausername) | `app/build.gradle.kts` |
+| HTTP вместо curl | `ureq` 3 + rustls, встроенные корневые сертификаты (webpki-roots), gzip, SOCKS; 4xx/5xx — не ошибка, как у curl без `-f` | `rust/core/src/http.rs` |
+| winreg в ядре | Остался только под `cfg(windows)` — системный прокси Windows в `net.rs`; на Android не собирается | `rust/core/Cargo.toml` |
+| Очередь | `core/queue.rs`: окно ПК получает события нитей через свой канал (как раньше), Android — через `Runner` (своя нить + слушатель) | `rust/core/src/queue.rs` |
+| Минимум свободного места | На телефоне 1 ГБ (на ПК по-прежнему 15) | `Vgd.kt` (`minFreeGb`) |
+| Первый запуск на телефоне | Куки браузера — `none` (на Android их не прочитать), раскладка «Тема/Канал» — включена, папка — `Download/Very Good Downloader` | `rust/android/src/lib.rs` (`init`) |
+| Профиль Rust для APK | `android`: как release, но `panic = "unwind"` (паника → исключение Kotlin, а не падение) и таблица символов для uniffi-bindgen | `rust/Cargo.toml` |
+
+## Состояние на 13.11.2026
+
+**Сделано:**
+- Этап 1 целиком: workspace, `http.rs` на ureq (curl.exe больше не нужен), `appinfo::init(Paths)`,
+  Linux-ветки (`statvfs`, `kill` группы процессов, `localtime_r`), очередь в ядре, VK за trait `vgd_core::vk::VkBackend`
+  (`vk_agent.js` — в ядре, общий). ПК: `cargo build --release` и `cargo test --lib` (47 тестов) проходят после
+  каждого шага, живая загрузка консолью проверена. Окно визуально не проверялось (computer-use не запускался).
+- Этап 2: `rust/android` (libvgd.so, UniFFI 0.32), Gradle сам собирает Rust и Kotlin-обёртку.
+- Этап 3 (каркас): «Поделиться» / «Открыть с помощью» / выделенный текст / плитка «из буфера» → очередь
+  фоновой службы без экрана; служба dataSync с прогрессом, WakeLock/WifiLock, `onTimeout` → пауза;
+  MediaScanner; экраны «Скачать», «Журнал» (поиск), «Настройки»; Material You + монохромный значок;
+  кнопка «проверить» (этап 0 одной кнопкой).
+- Проверено без телефона: `assembleDebug` (arm64-v8a), `lintDebug` без ошибок, JVM-тест связки Kotlin ↔ Rust
+  (`testDebugUnitTest`: init, настройки JSON, темы, очередь с колбэками), `diagnose` на ПК с настоящими yt-dlp/ffmpeg.
+
+**APK:** `D:\WORK\Very Good Downloader\YouTubeDownloader\release\android\VeryGoodDownloader-android-0.1.0-debug-arm64.apk`
+(77 МБ, sha256 `887f95a3…aaf9`; пересобирается `android\gradlew.bat assembleDebug`).
+
+**Эмулятор не запускался:** на ПК не включён гипервизор (Hyper-V/WHPX нет, драйвера AEHD нет), а его установка —
+системная настройка (нужны права администратора). Чтобы был эмулятор: «Включение компонентов Windows →
+Платформа низкоуровневой оболочки Windows» (WHPX) и перезагрузка, затем
+`android sdk install emulator system-images/android-36/google_apis/x86_64` и сборка с `-Pvgd.abis=arm64-v8a,x86_64`.
+
+### Что проверить на телефоне (Pixel 6)
+
+```powershell
+$adb = "D:\Android\Sdk\platform-tools\adb.exe"
+& $adb install -r "D:\WORK\Very Good Downloader\YouTubeDownloader\release\android\VeryGoodDownloader-android-0.1.0-debug-arm64.apk"
+& $adb logcat -s Vgd AndroidRuntime   # ошибки, если что-то упадёт
+```
+
+1. **Первый запуск:** разрешить уведомления; «Доступ ко всем файлам» → включить. На «Скачать» исчезает
+   «готовлю yt-dlp и ffmpeg…» (распаковка Python, ~5–15 с).
+2. **Этап 0 одной кнопкой:** «Настройки → Проверка → проверить», затем «Журнал». Ожидается:
+   версия yt-dlp; у ffmpeg — есть/НЕТ `libx264`, `h264_mediacodec`, `zscale`, `tonemap`, `aac`; строки
+   «форматы YouTube с QuickJS / без JS-движка» для ролика 1080p (`aqz-KE-bpKQ`): с QuickJS лучшая высота
+   должна быть ≥1080 и VP9/AV1 1080p+ — «есть». Прислать скриншот журнала.
+   Если `libx264`/`zscale`/`tonemap` — НЕТ: для копии для монтажа (этап 6) нужна своя сборка ffmpeg (+2–4 дня).
+   Если с QuickJS форматов не больше, чем без, — запасной вариант Node.js под Android (риск из плана).
+3. **«Поделиться» из приложения YouTube** → «Very Good Downloader» (или «Скачать в Very Good Downloader»):
+   экран не открывается, всплывает «Добавлено в очередь», в шторке — уведомление с прогрессом,
+   по окончании — «Скачано: …». Файл — `Download/Very Good Downloader/<Тема>/<Канал>/` в MKV (VP9 + Opus),
+   виден в «Файлах»/Галерее. Это «Готово» этапов 0 и 3.
+4. **Пауза/продолжить/↑↓** на карточках; «пауза» в уведомлении; погасить экран — загрузка идёт.
+5. **Material You:** сменить обои/цвета в «Обоях и стиле» — приложение меняет цвета; включить
+   «Тематические значки» — значок стрелки красится в цвет обоев.
+6. **Плитка:** шторка → карандаш → добавить «Скачать из буфера»; скопировать ссылку → нажать плитку.
+7. **Обновить yt-dlp** в настройках (zip-версия обновляется на месте через `-U`).
+
+### Дальше
+
+- **Этап 3, доделать по итогам телефона:** выбор папки системным диалогом, пресеты/фрагмент/«только звук» на
+  карточке, предложение «не оптимизировать батарею», журнал в файл, восстановление очереди после
+  перезапуска процесса (сейчас очередь живёт в памяти; на ПК так же).
+- **Этап 4 (музыка):** ядро уже умеет — нужен интерфейс (формат, «искать замену», проверка по звуку, тексты).
+- **Этап 5 (аккаунты):** VK — скрытый WebView, реализующий `VkSearcher` (`set_vk_searcher`, `vk_agent_js()`
+  уже экспортированы); Яндекс — вход кодом (`yandex_acc` в ядре есть, нужен экран); YouTube 18+ → `cookies.txt`.
+- **Этап 6:** копия для монтажа H.264, подписки (WorkManager), «Разложить папку», редактор категорий,
+  стили марок (заглушка — `Style.brandStyle`).
+- **Этап 7:** свой ключ подписи, GitHub Actions, Obtainium; минификация (R8) — APK станет меньше.
+
 ## Риски
 
 - **ffmpeg в youtubedl-android может не содержать** `libx264` / `zscale` → своя сборка. Выяснится на этапе 0.
