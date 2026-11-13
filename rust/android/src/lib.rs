@@ -354,6 +354,12 @@ impl Core {
         self.notify();
     }
 
+    /// Новый порядок карточек после перетаскивания (id сверху вниз).
+    pub fn reorder(&self, ids: Vec<u64>) {
+        self.runner.with(|q| q.reorder(&ids));
+        self.notify();
+    }
+
     pub fn remove(&self, id: u64) {
         self.runner.with(|q| q.remove(id));
         self.notify();
@@ -630,20 +636,24 @@ pub struct VkTrack {
 pub trait VkSearcher: Send + Sync {
     fn search(&self, q: String, count: u32) -> Result<Vec<VkTrack>, VgdError>;
     fn logged_in(&self) -> bool;
+    /// треки по id («-2001_123») — ссылка vk.com/audio-2001_123
+    fn by_id(&self, ids: String) -> Result<Vec<VkTrack>, VgdError>;
+}
+
+fn hits(v: Vec<VkTrack>) -> Vec<vgd_core::vk::VkHit> {
+    v.into_iter()
+        .map(|t| vgd_core::vk::VkHit { url: t.url, title: t.title, artist: t.artist, duration: t.duration, cover: t.cover })
+        .collect()
 }
 
 struct VkBridge(Arc<dyn VkSearcher>);
 
 impl vgd_core::vk::VkBackend for VkBridge {
     fn search(&self, q: &str, count: u32) -> Result<Vec<vgd_core::vk::VkHit>, String> {
-        self.0
-            .search(q.to_string(), count)
-            .map(|v| {
-                v.into_iter()
-                    .map(|t| vgd_core::vk::VkHit { url: t.url, title: t.title, artist: t.artist, duration: t.duration, cover: t.cover })
-                    .collect()
-            })
-            .map_err(|e| e.to_string())
+        self.0.search(q.to_string(), count).map(hits).map_err(|e| e.to_string())
+    }
+    fn by_id(&self, ids: &str) -> Result<Vec<vgd_core::vk::VkHit>, String> {
+        self.0.by_id(ids.to_string()).map(hits).map_err(|e| e.to_string())
     }
     fn logged_in(&self) -> bool {
         self.0.logged_in()

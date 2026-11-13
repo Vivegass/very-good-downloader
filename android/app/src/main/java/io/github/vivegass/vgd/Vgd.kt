@@ -13,6 +13,7 @@ import io.github.vivegass.vgd.core.QueueListener
 import io.github.vivegass.vgd.core.ToolPaths
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import java.io.File
 
 /**
@@ -62,7 +63,7 @@ object Vgd {
                 val c = Core(listener)
                 core = c
                 _ready.value = ""
-                addLog("Very Good Downloader ${io.github.vivegass.vgd.core.version()} для Android")
+                addLog("Very Good Downloader для Android ${BuildConfig.VERSION_NAME} (ядро ${io.github.vivegass.vgd.core.version()})")
                 return c
             } catch (e: Throwable) {
                 Log.e(TAG, "init", e)
@@ -128,9 +129,9 @@ object Vgd {
         }.start()
     }
 
+    /** Строка в журнал (из любой нити: `update` не теряет строки при одновременной записи). */
     fun addLog(line: String) {
-        val l = _log.value
-        _log.value = if (l.size >= 3000) l.drop(l.size - 2999) + line else l + line
+        _log.update { l -> if (l.size >= 3000) l.drop(l.size - 2999) + line else l + line }
     }
 
     private val listener = object : QueueListener {

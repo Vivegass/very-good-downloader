@@ -603,6 +603,8 @@ impl Downloader {
             "-o".into(), tmpl.into(),
             "--windows-filenames".into(), "--continue".into(),
             "--retries".into(), "20".into(), "--fragment-retries".into(), "50".into(),
+            // Обрывы через VPN (SSL UNEXPECTED_EOF): пауза перед повтором растёт 1→2→4…20 с, а не сразу.
+            "--retry-sleep".into(), "http:exp=1:20".into(), "--retry-sleep".into(), "fragment:exp=1:20".into(),
             "--concurrent-fragments".into(), "4".into(),
             "--newline".into(), "--progress".into(),
             "--progress-template".into(),

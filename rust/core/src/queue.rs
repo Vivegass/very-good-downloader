@@ -109,6 +109,9 @@ struct Shared {
     queue: VecDeque<(u64, String, JobOpts)>,
     /// что качается сейчас: основная нить и нить для небольшой музыки
     current: Vec<(u64, CancelHandle)>,
+    /// взяты нитями, но карточка ещё «в очереди» (первое событие не дошло до `handle`):
+    /// `sync` не должен ставить их в очередь второй раз — иначе одна ссылка качается дважды
+    taken: HashSet<u64>,
     settings: Settings,
     stop_all: bool,
 }
@@ -180,9 +183,14 @@ impl Queue {
 
     /// Очередь для рабочих нитей — ссылки «в очереди» в порядке карточек.
     pub fn sync(&mut self) {
-        let q: VecDeque<_> =
-            self.jobs.iter().filter(|j| j.state == State::Queued).map(|j| (j.id, j.url.clone(), j.opts.clone())).collect();
-        self.lock().queue = q;
+        let mut sh = self.lock();
+        let q: VecDeque<_> = self
+            .jobs
+            .iter()
+            .filter(|j| j.state == State::Queued && !sh.taken.contains(&j.id))
+            .map(|j| (j.id, j.url.clone(), j.opts.clone()))
+            .collect();
+        sh.queue = q;
     }
 
     /// Идёт загрузка (в любой из двух нитей).
@@ -278,15 +286,39 @@ impl Queue {
         self.start();
     }
 
-    /// Сдвинуть карточку вверх (-1) или вниз (+1).
+    /// Сдвинуть ждущую карточку вверх (-1) или вниз (+1) — мимо ближайшей другой ждущей
+    /// («в очереди» или «на паузе»): иначе обмен с готовой или идущей карточкой ничего не меняет
+    /// в порядке загрузки.
     pub fn move_job(&mut self, id: u64, dir: i32) {
-        if let Some(i) = self.jobs.iter().position(|j| j.id == id) {
-            let k = i as i64 + dir as i64;
-            if k >= 0 && (k as usize) < self.jobs.len() {
-                self.jobs.swap(i, k as usize);
-                self.sync();
+        let waiting = |j: &Job| matches!(j.state, State::Queued | State::Paused);
+        let Some(i) = self.jobs.iter().position(|j| j.id == id) else { return };
+        if !waiting(&self.jobs[i]) {
+            return;
+        }
+        let k = if dir < 0 {
+            self.jobs[..i].iter().rposition(waiting)
+        } else {
+            self.jobs[i + 1..].iter().position(waiting).map(|k| k + i + 1)
+        };
+        if let Some(k) = k {
+            self.jobs.swap(i, k);
+            self.sync();
+        }
+    }
+
+    /// Новый порядок карточек (перетаскивание): `ids` — как на экране; неизвестные id пропускаются,
+    /// карточки, которых нет в `ids`, остаются в конце в прежнем порядке.
+    pub fn reorder(&mut self, ids: &[u64]) {
+        let mut rest = std::mem::take(&mut self.jobs);
+        let mut out = Vec::with_capacity(rest.len());
+        for id in ids {
+            if let Some(i) = rest.iter().position(|j| j.id == *id) {
+                out.push(rest.remove(i));
             }
         }
+        out.extend(rest);
+        self.jobs = out;
+        self.sync();
     }
 
     pub fn remove(&mut self, id: u64) {
@@ -422,7 +454,10 @@ fn work(shared: Arc<Mutex<Shared>>, sink: Sink, side: bool) {
             };
             match pos.and_then(|i| sh.queue.remove(i)) {
                 // Общие настройки → пресет → свои значения ссылки.
-                Some((id, url, opts)) => (id, url, sh.settings.for_job(&opts), opts),
+                Some((id, url, opts)) => {
+                    sh.taken.insert(id);
+                    (id, url, sh.settings.for_job(&opts), opts)
+                }
                 None => break,
             }
         };
@@ -447,7 +482,11 @@ fn work(shared: Arc<Mutex<Shared>>, sink: Sink, side: bool) {
                 Event::Finish(id, State::Error, Vec::new(), Some(m))
             }
         };
-        lock().current.retain(|(cid, _)| *cid != id);
+        {
+            let mut sh = lock();
+            sh.current.retain(|(cid, _)| *cid != id);
+            sh.taken.remove(&id);
+        }
         sink(ev);
     }
     sink(Event::Idle);
@@ -565,6 +604,47 @@ mod tests {
         q.stop_all();
         assert_eq!(q.job(b).unwrap().state, State::Queued);
         assert!(queued_urls(&q).is_empty(), "stop_all чистит очередь нитей");
+    }
+
+    /// Взятая нитью ссылка не ставится в очередь второй раз, пока карточка ещё «в очереди».
+    #[test]
+    fn taken_job_is_not_queued_twice() {
+        let mut q = quiet();
+        let a = q.add("https://a".into(), JobOpts::default(), None, None);
+        // нить взяла «a» (как в `work`), первое событие прогресса ещё не дошло
+        {
+            let mut sh = q.shared.lock().unwrap();
+            sh.queue.pop_front();
+            sh.taken.insert(a);
+        }
+        q.add("https://b".into(), JobOpts::default(), None, None); // sync
+        assert_eq!(queued_urls(&q), ["https://b"]);
+        q.shared.lock().unwrap().taken.remove(&a);
+    }
+
+    /// Приоритет: ↑ у ждущей карточки обгоняет ближайшую ждущую, мимо идущей и готовой.
+    #[test]
+    fn move_skips_running_and_done() {
+        let mut q = quiet();
+        let a = q.add("https://a".into(), JobOpts::default(), None, None);
+        let b = q.add("https://b".into(), JobOpts::default(), None, None);
+        let c = q.add("https://c".into(), JobOpts::default(), None, None);
+        let d = q.add("https://d".into(), JobOpts::default(), None, None);
+        q.handle(Event::Progress(a, Progress::default())); // a качается
+        q.handle(Event::Progress(b, Progress::default()));
+        q.handle(Event::Finish(b, State::Done, vec![], None)); // b готова
+        q.sync(); // в жизни a и b уже взяли нити
+        assert_eq!(queued_urls(&q), ["https://c", "https://d"]);
+        q.move_job(d, -1);
+        assert_eq!(queued_urls(&q), ["https://d", "https://c"]);
+        q.move_job(d, -1); // выше ждущих нет — на месте
+        assert_eq!(queued_urls(&q), ["https://d", "https://c"]);
+        q.move_job(a, 1); // идущую не двигаем
+        assert_eq!(q.jobs[0].id, a);
+        // перетаскивание
+        q.reorder(&[c, a, d, 999]);
+        assert_eq!(q.jobs.iter().map(|j| j.id).collect::<Vec<_>>(), [c, a, d, b]);
+        assert_eq!(queued_urls(&q), ["https://c", "https://d"]);
     }
 
     #[test]

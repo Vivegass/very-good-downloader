@@ -116,6 +116,19 @@
     }
   };
 
+  /** Треки по id («-2001_123,456_789»): audio.getById — для ссылки vk.com/audio-2001_123. */
+  window.__vgdById = async (rid, ids) => {
+    try {
+      const api = window.vkApi && typeof window.vkApi.api === "function" ? window.vkApi : null;
+      if (!api) return post({ rid, error: "нет входа в VK" });
+      const res = await api.api("audio.getById", { audios: ids, v: "5.204" });
+      const items = (Array.isArray(res) ? res : res?.items || []).map(fromApi).filter((t) => t.url);
+      post({ rid, items });
+    } catch (e) {
+      post({ rid, error: String((e && (e.error_msg || e.message)) || JSON.stringify(e)) });
+    }
+  };
+
   const state = () =>
     post({ type: "state", logged: !!(window.vk && +window.vk.id), api: !!(window.vkApi && window.vkApi.api), url: location.href });
   const later = () => setTimeout(state, 1500);

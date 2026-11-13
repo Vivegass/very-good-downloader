@@ -120,11 +120,80 @@ pub fn resolve(url: &str, s: &Settings, log: &dyn Fn(String)) -> Option<Result<M
         return Some(yandex(url));
     }
     if u.contains("vk.com/") || u.contains("vk.ru/") {
-        return Some(Err("VK отдаёт музыку только после входа в аккаунт. Откройте плейлист в браузере, где вы вошли в VK, \
-             и нажмите кнопку «скачать плейлист» расширения Very Good Downloader — оно передаст список треков в программу."
-            .into()));
+        return Some(vk_link(url, log));
     }
     None
+}
+
+/// Ссылка VK на трек: со входом — сам трек (audio.getById в «невидимом браузере»); без входа — название
+/// со страницы и поиск в других местах. Плейлисты VK — расширением браузера (ПК).
+fn vk_link(url: &str, log: &dyn Fn(String)) -> Result<MusicList, String> {
+    let how = if cfg!(target_os = "android") {
+        "Войдите в VK: «Настройки → Аккаунты → войти в VK»."
+    } else {
+        "Войдите в VK («Настройки → Музыка → войти в VK») или откройте плейлист в браузере, где вы вошли в VK, \
+         и нажмите кнопку «скачать плейлист» расширения Very Good Downloader."
+    };
+    let Some(id) = crate::vk::audio_id(url) else {
+        return Err(format!("VK отдаёт плейлисты только после входа в аккаунт. {how}"));
+    };
+    let single = |t: Track| MusicList { name: t.display(), service: "VK".into(), tracks: vec![t], note: None, by_album: false, single: true };
+    if crate::vk::logged_in() {
+        match crate::vk::by_id(&id) {
+            Ok(hits) if !hits.is_empty() => {
+                let h = &hits[0];
+                return Ok(single(Track {
+                    artist: h.artist.clone(),
+                    title: h.title.clone(),
+                    duration: h.duration,
+                    cover: h.cover.clone(),
+                    source: Some(h.url.clone()),
+                    key: format!("vk:{id}"),
+                    ..Default::default()
+                }));
+            }
+            Ok(_) => log("VK не отдал этот трек (удалён или закрыт) — ищу по названию.".into()),
+            Err(e) => log(format!("VK: {e} — ищу по названию.")),
+        }
+    }
+    // Без входа: название со страницы (если VK его показывает), дальше — поиск на других сайтах.
+    if let Some((artist, title)) = vk_page_title(url) {
+        log(format!("VK без входа: нашёл название «{artist} — {title}», ищу на других сайтах."));
+        return Ok(single(Track { artist, title, key: format!("vkname:{id}"), ..Default::default() }));
+    }
+    Err(format!("VK не показывает трек без входа в аккаунт, а название по ссылке узнать не удалось. {how}"))
+}
+
+/// («исполнитель», «название») из og:title / <title> страницы трека VK, если она открыта без входа.
+fn vk_page_title(url: &str) -> Option<(String, String)> {
+    let html = fetch(url).ok()?;
+    let raw = meta_content(&html, "og:title").or_else(|| {
+        let a = html.find("<title>")? + 7;
+        Some(html[a..a + html[a..].find("</title>")?].to_string())
+    })?;
+    page_title_track(&raw)
+}
+
+fn page_title_track(raw: &str) -> Option<(String, String)> {
+    let t = html_unescape(raw);
+    let t = t.trim().trim_end_matches("| ВКонтакте").trim_end_matches("| VK").trim();
+    if t.is_empty() || t.contains("ВКонтакте") || t == "VK" {
+        return None;
+    }
+    let (a, b) = t.split_once(" — ").or_else(|| t.split_once(" - "))?;
+    Some((a.trim().to_string(), b.trim().to_string()))
+}
+
+fn meta_content(html: &str, prop: &str) -> Option<String> {
+    let i = html.find(&format!("property=\"{prop}\""))?;
+    let tag_start = html[..i].rfind('<')?;
+    let tag = &html[tag_start..tag_start + html[tag_start..].find('>')?];
+    let c = tag.find("content=\"")? + 9;
+    Some(tag[c..c + tag[c..].find('"')?].to_string())
+}
+
+fn html_unescape(s: &str) -> String {
+    s.replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&#8212;", "—")
 }
 
 // ---------- HTTP (crate::http; раньше curl.exe) ----------
@@ -203,8 +272,32 @@ fn spotify(url: &str, st: &Settings, log: &dyn Fn(String)) -> Result<MusicList, 
 
 /// Встраиваемый плеер: без ключей, но не больше 100 треков.
 fn spotify_embed(kind: &str, id: &str) -> Result<MusicList, String> {
-    let html = fetch(&format!("https://open.spotify.com/embed/{kind}/{id}"))?;
-    let start = html.find("<script id=\"__NEXT_DATA__\"").ok_or("Spotify не отдал страницу плеера")?;
+    let r = req(&format!("https://open.spotify.com/embed/{kind}/{id}")).header("Accept-Language", "en-US,en;q=0.9").send()?;
+    let html = String::from_utf8_lossy(&r.body).into_owned();
+    let Some(start) = html.find("<script id=\"__NEXT_DATA__\"") else {
+        // Бывает с некоторых адресов (VPN): вместо плеера — другая страница. Код и размер — для разбора по журналу.
+        let page = html.find("<title>").and_then(|a| html[a + 7..].find("</title>").map(|b| html[a + 7..a + 7 + b].trim().to_string()));
+        let why = format!(
+            "Spotify не отдал страницу плеера (HTTP {}, {} байт{})",
+            r.status,
+            r.body.len(),
+            page.filter(|t| !t.is_empty()).map(|t| format!(", «{}»", t.chars().take(60).collect::<String>())).unwrap_or_default()
+        );
+        // Трек: название — из oEmbed Spotify, дальше обычный поиск по сайтам.
+        if kind == "track" {
+            if let Some(t) = spotify_oembed_title(id) {
+                return Ok(MusicList {
+                    name: t.clone(),
+                    service: "Spotify".into(),
+                    tracks: vec![Track { title: t, key: format!("spotify:{id}"), ..Default::default() }],
+                    note: Some(format!("{why}; ищу по названию трека.")),
+                    by_album: false,
+                    single: true,
+                });
+            }
+        }
+        return Err(why);
+    };
     let body_start = html[start..].find('>').map(|i| start + i + 1).ok_or("Spotify: нет данных")?;
     let end = html[body_start..].find("</script>").map(|i| body_start + i).ok_or("Spotify: нет данных")?;
     let d: Value = serde_json::from_str(&html[body_start..end]).map_err(|_| "Spotify: непонятные данные")?;
@@ -243,6 +336,12 @@ fn spotify_embed(kind: &str, id: &str) -> Result<MusicList, String> {
             .to_string()
     });
     Ok(MusicList { name, service: "Spotify".into(), tracks, note, by_album: false, single: kind == "track" })
+}
+
+/// Название трека из oEmbed (официальный ответ для вставки плеера; исполнителя там нет).
+fn spotify_oembed_title(id: &str) -> Option<String> {
+    let v = get_json(&format!("https://open.spotify.com/oembed?url=https://open.spotify.com/track/{id}"), &[]).ok()?;
+    Some(s(&v, "title")).filter(|t| !t.is_empty())
 }
 
 fn spotify_token(st: &Settings) -> Result<String, String> {
@@ -995,6 +1094,16 @@ mod tests {
     }
 
     #[test]
+    fn vk_page_titles() {
+        assert_eq!(page_title_track("ВКонтакте | ВКонтакте"), None);
+        assert_eq!(page_title_track("Steve Lacy &#8212; Dark Red | VK"), Some(("Steve Lacy".into(), "Dark Red".into())));
+        assert_eq!(
+            meta_content(r#"<meta property="og:title" content="A — B" />"#, "og:title").as_deref(),
+            Some("A — B")
+        );
+    }
+
+    #[test]
     fn spotify_links() {
         assert_eq!(
             spotify_ref("https://open.spotify.com/playlist/5HPP8szpJyUcaYnDeEbHz3?si=4ca"),
@@ -1022,5 +1131,23 @@ mod tests {
         assert!(!matches(&t, "Bullet Proof ... I Wish I Was", "Radiohead", Some(260.0)));
         assert!(!matches(&t, "Creep", "Radiohead", Some(208.0)));
         assert_eq!(normalize("Song (Official Video) feat. X"), "song");
+    }
+}
+
+#[cfg(test)]
+mod live_spotify {
+    /// `cargo test -p vgd-core --lib live_spotify -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn track_page() {
+        let r = super::req("https://open.spotify.com/embed/track/3EaJDYHA0KnX88JvDhL9oa").send();
+        match &r {
+            Ok(x) => println!("status {} len {}", x.status, x.body.len()),
+            Err(e) => println!("err {e}"),
+        }
+        assert_eq!(super::spotify_oembed_title("3EaJDYHA0KnX88JvDhL9oa").as_deref(), Some("Dark Red"));
+        let l = super::spotify_embed("track", "3EaJDYHA0KnX88JvDhL9oa");
+        println!("{:?}", l.as_ref().map(|l| (&l.name, l.tracks.len())));
+        assert!(l.is_ok());
     }
 }

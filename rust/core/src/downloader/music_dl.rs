@@ -483,11 +483,26 @@ impl Downloader {
                 Err(DlError::Cancelled(m)) => return Err(DlError::Cancelled(m)),
                 Err(DlError::Failed(m)) if is_network_error(&m) => return fail(m),
                 Err(DlError::Failed(m)) => {
-                    self.log(format!("«{}» недоступен на сервисе ({}) — ищу замену.", want.display(), first_line(&m)));
-                    if want.title.is_empty() {
+                    // В плейлисте SoundCloud у дальних треков нет названия (только api-v2…/tracks/ID), а защищённый
+                    // (DRM) трек не отдаёт сведений обычным запросом — спросим без форматов: название и автор есть.
+                    if want.title.is_empty() || want.artist.is_empty() {
+                        if let Ok(meta) = self.music_meta(&src) {
+                            if want.title.is_empty() {
+                                want.title = str_of(&meta, &["track", "title"]);
+                            }
+                            if want.artist.is_empty() {
+                                want.artist = str_of(&meta, &["artist", "creator", "uploader"]).trim_end_matches(" - Topic").to_string();
+                            }
+                            if want.duration.is_none() {
+                                want.duration = meta.get("duration").and_then(Value::as_f64);
+                            }
+                        }
+                    }
+                    if want.title.is_empty() && !src.contains("/tracks/") {
                         // Название из ссылки: soundcloud.com/автор/название-трека
                         want.title = src.trim_end_matches('/').rsplit('/').next().unwrap_or("").replace('-', " ");
                     }
+                    self.log(format!("«{}» недоступен на сервисе ({}) — ищу замену.", want.display(), first_line(&m)));
                 }
             }
         }
@@ -534,7 +549,8 @@ impl Downloader {
         // Порядок: VK и Яндекс от аккаунта пользователя (часто mp3 320 / flac и редкие треки), затем точные
         // ссылки song.link на тот же трек, затем обычный поиск.
         let mut first: Vec<(&str, &str, String)> = Vec::new();
-        if self.s.vk_search && !t.key.starts_with("vk:") {
+        // Без входа в VK поиск там не работает — сразу другие источники, как будто галочка выключена.
+        if self.s.vk_search && !t.key.starts_with("vk:") && crate::vk::logged_in() {
             first.push(("vk", "VK", base.clone()));
         }
         if self.s.yandex_acc && !t.key.starts_with("yandex:") && crate::yandex_acc::logged_in() {
@@ -725,6 +741,20 @@ impl Downloader {
             .collect())
     }
 
+    /// Только название, автор, длительность — даже у защищённого (DRM) трека, который не скачать.
+    fn music_meta(&mut self, url: &str) -> R<Value> {
+        let args = vec![
+            "-j".to_string(),
+            "--no-playlist".to_string(),
+            "--skip-download".to_string(),
+            "--ignore-no-formats-error".to_string(),
+            "--".to_string(),
+            url.to_string(),
+        ];
+        let r = self.ytdlp(&args, |_, _| {})?;
+        super::parse_json(&r.stdout)
+    }
+
     /// Сведения о треке (`yt-dlp -j`), только звук.
     fn music_info(&mut self, url: &str) -> R<Value> {
         let args = vec!["-j".to_string(), "--no-playlist".to_string(), "-f".to_string(), "bestaudio/best".to_string()];
@@ -781,6 +811,7 @@ impl Downloader {
             "-o".into(), format!("{}.%(ext)s", name.replace('%', "%%")),
             "--windows-filenames".into(), "--force-overwrites".into(),
             "--retries".into(), "15".into(), "--fragment-retries".into(), "30".into(),
+            "--retry-sleep".into(), "http:exp=1:20".into(), "--retry-sleep".into(), "fragment:exp=1:20".into(),
             "--embed-metadata".into(), "--embed-thumbnail".into(), "--convert-thumbnails".into(), "jpg".into(),
             // Кадр из видео 16:9 → квадрат по центру, как обложка альбома.
             "--ppa".into(), r#"ThumbnailsConvertor+ffmpeg_o:-vf "crop=min(iw\,ih):min(iw\,ih)""#.into(),

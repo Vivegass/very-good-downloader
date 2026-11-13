@@ -122,6 +122,9 @@ impl VkBackend for WebView2Agent {
     fn logged_in(&self) -> bool {
         logged_in()
     }
+    fn by_id(&self, ids: &str) -> Result<Vec<VkHit>, String> {
+        call(json!({ "ids": ids }))
+    }
 }
 
 /// Подключить поиск VK к ядру. Вызывается при запуске окна и консоли.
@@ -131,6 +134,11 @@ pub fn install() {
 
 /// Поиск треков в VK. Первый вызов запускает фоновый процесс (несколько секунд), дальше — быстро.
 pub fn search(q: &str, count: u32) -> Result<Vec<VkHit>, String> {
+    call(json!({ "q": q, "count": count }))
+}
+
+/// Запрос агенту: {q, count} — поиск, {ids} — треки по id.
+fn call(mut req: Value) -> Result<Vec<VkHit>, String> {
     let mut guard = AGENT.lock().unwrap_or_else(|e| e.into_inner());
     if guard.as_mut().is_some_and(|a| a.child.try_wait().ok().flatten().is_some()) {
         *guard = None; // процесс завершился — запустим заново
@@ -156,7 +164,7 @@ pub fn search(q: &str, count: u32) -> Result<Vec<VkHit>, String> {
     let a = guard.as_mut().unwrap();
     let rid = a.next;
     a.next += 1;
-    let req = json!({ "rid": rid, "q": q, "count": count });
+    req["rid"] = json!(rid);
     if writeln!(a.stdin, "{req}").and_then(|_| a.stdin.flush()).is_err() {
         *guard = None;
         return Err("поиск VK прервался".into());
@@ -243,12 +251,16 @@ pub fn run_window(login: bool) -> Result<(), String> {
         std::thread::spawn(move || {
             for line in std::io::stdin().lock().lines().map_while(Result::ok) {
                 let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-                let js = format!(
+                let js = if let Some(ids) = v["ids"].as_str() {
+                    format!("window.__vgdById && window.__vgdById({}, {})", v["rid"], serde_json::to_string(ids).unwrap_or_default())
+                } else {
+                    format!(
                     "window.__vgdSearch && window.__vgdSearch({}, {}, {})",
                     v["rid"],
                     serde_json::to_string(v["q"].as_str().unwrap_or("")).unwrap_or_default(),
                     v["count"].as_u64().unwrap_or(10)
-                );
+                    )
+                };
                 if proxy.send_event(UserEvent::Eval(js)).is_err() {
                     break;
                 }

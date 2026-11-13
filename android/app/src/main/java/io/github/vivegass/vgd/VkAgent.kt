@@ -93,10 +93,30 @@ object VkAgent : VkSearcher {
         web = null
     }
 
-    override fun search(q: String, count: UInt): List<VkTrack> {
-        main.post { ensureWeb() }
+    override fun search(q: String, count: UInt): List<VkTrack> =
+        call("window.__vgdSearch && window.__vgdSearch(%d, ${JSONObject.quote(q)}, ${count.toLong()})")
+
+    override fun byId(ids: String): List<VkTrack> =
+        call("window.__vgdById && window.__vgdById(%d, ${JSONObject.quote(ids)})")
+
+    /** Защёлка «страница загрузилась» — та, что создал `ensureWeb` (в главной нити), а не прежняя. */
+    private fun prepare(): CountDownLatch {
+        val done = CountDownLatch(1)
+        var latch: CountDownLatch? = null
+        main.post {
+            ensureWeb()
+            latch = stateLatch
+            done.countDown()
+        }
+        done.await(10, TimeUnit.SECONDS)
+        return latch ?: stateLatch
+    }
+
+    /** Выполнить команду `vk_agent.js` (`%d` — номер запроса) и дождаться треков. */
+    private fun call(jsTemplate: String): List<VkTrack> {
+        if (!loggedIn()) throw VgdException.Failed("нет входа в VK — «Настройки → Аккаунты → войти в VK»")
         // ждём, пока страница VK загрузится и скажет, есть ли вход
-        if (!stateLatch.await(40, TimeUnit.SECONDS)) {
+        if (!prepare().await(40, TimeUnit.SECONDS)) {
             reset()
             throw VgdException.Failed("страница VK не загрузилась (нет связи)")
         }
@@ -109,7 +129,7 @@ object VkAgent : VkSearcher {
         val latch = CountDownLatch(1)
         val box = arrayOfNulls<JSONObject>(1)
         waiting[rid] = latch to box
-        val js = "window.__vgdSearch && window.__vgdSearch($rid, ${JSONObject.quote(q)}, ${count.toLong()})"
+        val js = jsTemplate.replace("%d", rid.toString())
         main.post { web?.evaluateJavascript(js, null) }
         try {
             if (!latch.await(30, TimeUnit.SECONDS)) throw VgdException.Failed("VK не ответил за 30 с")

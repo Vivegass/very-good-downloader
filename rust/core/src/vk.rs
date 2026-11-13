@@ -26,6 +26,10 @@ pub trait VkBackend: Send + Sync {
     fn search(&self, q: &str, count: u32) -> Result<Vec<VkHit>, String>;
     /// Вошёл ли пользователь (по последней проверке).
     fn logged_in(&self) -> bool;
+    /// Треки по id (`audio.getById`, «-2001_123,456_789») — ссылка vk.com/audio-2001_123.
+    fn by_id(&self, _ids: &str) -> Result<Vec<VkHit>, String> {
+        Err("трек VK по ссылке не поддерживается в этой версии программы".into())
+    }
 }
 
 static BACKEND: RwLock<Option<Arc<dyn VkBackend>>> = RwLock::new(None);
@@ -47,6 +51,26 @@ pub fn search(q: &str, count: u32) -> Result<Vec<VkHit>, String> {
     }
 }
 
+/// Треки по id («-2001_123»). Нет реализации — ошибка.
+pub fn by_id(ids: &str) -> Result<Vec<VkHit>, String> {
+    match backend() {
+        Some(b) => b.by_id(ids),
+        None => Err("VK недоступен в этой версии программы".into()),
+    }
+}
+
+/// id трека из ссылки: vk.com/audio-2001_123 (или …_123_ключ) → «-2001_123[_ключ]». Плейлисты — None.
+pub fn audio_id(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next()?;
+    let seg = path.trim_end_matches('/').rsplit('/').next()?;
+    let id = seg.strip_prefix("audio")?;
+    if id.starts_with("_playlist") || id.starts_with('s') || !id.contains('_') {
+        return None;
+    }
+    let ok = id.trim_start_matches('-').split('_').next().is_some_and(|o| !o.is_empty() && o.bytes().all(|b| b.is_ascii_digit()));
+    ok.then(|| id.to_string())
+}
+
 pub fn logged_in() -> bool {
     backend().is_some_and(|b| b.logged_in())
 }
@@ -63,6 +87,15 @@ mod tests {
         fn logged_in(&self) -> bool {
             true
         }
+    }
+
+    #[test]
+    fn audio_ids() {
+        assert_eq!(audio_id("https://vk.com/audio-2001949618_118949618").as_deref(), Some("-2001949618_118949618"));
+        assert_eq!(audio_id("https://vk.ru/audio371745461_456289486?x=1").as_deref(), Some("371745461_456289486"));
+        assert_eq!(audio_id("https://vk.com/audio_playlist-2000_1"), None);
+        assert_eq!(audio_id("https://vk.com/audios123"), None);
+        assert_eq!(audio_id("https://vk.com/audio"), None);
     }
 
     #[test]

@@ -157,6 +157,7 @@ impl Downloader {
             "-P".into(), format!("temp:{}", parts.display()),
             "-o".into(), format!("{tag}.%(ext)s"),
             "--retries".into(), "15".into(), "--fragment-retries".into(), "30".into(),
+            "--retry-sleep".into(), "http:exp=1:20".into(), "--retry-sleep".into(), "fragment:exp=1:20".into(),
             "--write-thumbnail".into(), "--convert-thumbnails".into(), "jpg".into(),
             "--ppa".into(), r#"ThumbnailsConvertor+ffmpeg_o:-vf "crop=min(iw\,ih):min(iw\,ih)""#.into(),
             "--newline".into(), "--progress".into(),
