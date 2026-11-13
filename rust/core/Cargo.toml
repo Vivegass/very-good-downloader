@@ -20,3 +20,7 @@ ureq = { version = "3.5", default-features = false, features = ["rustls", "gzip"
 [target.'cfg(windows)'.dependencies]
 # только системный прокси Windows (net.rs)
 winreg = "0.56"
+
+[target.'cfg(unix)'.dependencies]
+# Linux/Android: место на диске (statvfs), остановка группы процессов, местное время
+libc = "0.2"

@@ -10,8 +10,62 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Не показывать чёрные окна консоли у дочерних процессов (ffmpeg, yt-dlp).
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+// ---------- пути, заданные при запуске (Android) ----------
+
+/// Как запускать внешний инструмент: программа и аргументы перед своими.
+/// На Android yt-dlp — это `libpython.so <папка>/yt-dlp --ffmpeg-location … --js-runtimes quickjs:…`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tool {
+    pub program: PathBuf,
+    pub prefix: Vec<String>,
+}
+
+/// Пути и окружение, которые программа задаёт при запуске (`init`). На Windows не задаются — всё ищется
+/// как раньше (`%APPDATA%`, `bin\` рядом с exe, PATH); Android передаёт папку данных приложения,
+/// yt-dlp / ffmpeg из nativeLibraryDir и переменные для Python (`LD_LIBRARY_PATH`, `PYTHONHOME`, …).
+#[derive(Clone, Debug, Default)]
+pub struct Paths {
+    /// папка настроек, тем, списков (вместо `%APPDATA%\VeryGoodDownloader`)
+    pub data_dir: Option<PathBuf>,
+    /// инструменты по имени: "yt-dlp", "ffmpeg"
+    pub tools: Vec<(String, Tool)>,
+    /// переменные окружения для всех дочерних процессов
+    pub env: Vec<(String, String)>,
+    /// сколько ГБ оставлять свободными (по умолчанию `downloader::MIN_FREE_GB`)
+    pub min_free_gb: Option<f64>,
+}
+
+static PATHS: OnceLock<Paths> = OnceLock::new();
+
+/// Задать пути один раз при запуске, до первой загрузки. Повторный вызов ничего не меняет (false).
+pub fn init(paths: Paths) -> bool {
+    PATHS.set(paths).is_ok()
+}
+
+fn paths() -> Option<&'static Paths> {
+    PATHS.get()
+}
+
+fn configured_tool(name: &str) -> Option<&'static Tool> {
+    paths()?.tools.iter().find(|(n, _)| n == name).map(|(_, t)| t)
+}
+
+/// Инструмент задан в `init` (Android), а не найден рядом с программой.
+pub fn tool_configured(name: &str) -> bool {
+    configured_tool(name).is_some()
+}
+
+/// Свободного места не меньше, ГБ (задано в `init`).
+pub fn min_free_gb() -> Option<f64> {
+    paths().and_then(|p| p.min_free_gb)
+}
+
 /// `%APPDATA%\VeryGoodDownloader` — те же settings.json и topics.json, что у Python-версии.
+/// На Android — папка, переданная в `init`.
 pub fn data_dir() -> PathBuf {
+    if let Some(d) = paths().and_then(|p| p.data_dir.clone()) {
+        return d;
+    }
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(app_dir);
     base.join("VeryGoodDownloader")
 }
@@ -45,10 +99,22 @@ fn which(exe: &str) -> Option<PathBuf> {
     std::env::split_paths(&path).map(|d| d.join(exe)).find(|p| p.is_file())
 }
 
-/// Полный путь к инструменту: свои папки, затем PATH.
+/// Имя исполняемого файла: `yt-dlp.exe` на Windows, `yt-dlp` на Linux/Android.
+fn exe_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Полный путь к инструменту: заданный в `init`, свои папки, затем PATH.
 pub fn tool(name: &str) -> PathBuf {
+    if let Some(t) = configured_tool(name) {
+        return t.program.clone();
+    }
     static DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
-    let exe = format!("{name}.exe");
+    let exe = exe_name(name);
     let dirs = DIRS.get_or_init(tool_dirs);
     find_in(dirs, &exe).or_else(|| which(&exe)).unwrap_or_else(|| PathBuf::from(exe))
 }
@@ -63,13 +129,34 @@ pub fn child_path() -> std::ffi::OsString {
 }
 
 /// Команда без окна консоли и с UTF-8 выводом у Python (yt-dlp).
+/// Если `program` — инструмент, заданный в `init`, к команде добавляются его аргументы-приставка
+/// (`libpython.so …/yt-dlp …`) и переменные окружения из `init`.
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    command_with(paths(), program.as_ref())
+}
+
+fn command_with(paths: Option<&Paths>, program: &std::ffi::OsStr) -> Command {
+    let tool = paths.and_then(|p| p.tools.iter().map(|(_, t)| t).find(|t| t.program.as_os_str() == program));
     let mut c = Command::new(program);
+    if let Some(t) = tool {
+        c.args(&t.prefix);
+    }
     c.env("PATH", child_path()).env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
+    if let Some(p) = paths {
+        for (k, v) in &p.env {
+            c.env(k, v);
+        }
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         c.creation_flags(CREATE_NO_WINDOW);
+    }
+    // Своя группа процессов: отмена гасит и детей (python -> ffmpeg), см. downloader::kill_tree.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
     }
     c
 }
@@ -128,4 +215,35 @@ pub fn write_hidden(path: &Path, data: &[u8]) -> std::io::Result<()> {
 pub fn hidden_dir(path: &Path) {
     let _ = std::fs::create_dir_all(path);
     hide(path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_tool_gets_prefix_and_env() {
+        let p = Paths {
+            tools: vec![(
+                "yt-dlp".into(),
+                Tool { program: PathBuf::from("/app/lib/libpython.so"), prefix: vec!["/files/yt-dlp".into(), "--ffmpeg-location".into(), "/app/lib/libffmpeg.so".into()] },
+            )],
+            env: vec![("PYTHONHOME".into(), "/files/python/usr".into())],
+            ..Default::default()
+        };
+        let mut c = command_with(Some(&p), std::ffi::OsStr::new("/app/lib/libpython.so"));
+        c.arg("--version");
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, ["/files/yt-dlp", "--ffmpeg-location", "/app/lib/libffmpeg.so", "--version"]);
+        assert!(c.get_envs().any(|(k, v)| k == "PYTHONHOME" && v == Some(std::ffi::OsStr::new("/files/python/usr"))));
+        // другой инструмент — без приставки
+        let c = command_with(Some(&p), std::ffi::OsStr::new("ffmpeg"));
+        assert_eq!(c.get_args().count(), 0);
+    }
+
+    #[test]
+    fn versions_compare_as_numbers() {
+        assert!(vtuple("2026.08.19") == vtuple("2026.8.19"));
+        assert!(vtuple("2026.10.1") > vtuple("2026.9.30"));
+    }
 }

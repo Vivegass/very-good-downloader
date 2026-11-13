@@ -4488,6 +4488,7 @@ version = "1.11.0"
 dependencies = [
  "base64",
  "hmac",
+ "libc",
  "serde",
  "serde_json",
  "sha2 0.11.1",

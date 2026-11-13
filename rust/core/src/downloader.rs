@@ -89,8 +89,19 @@ impl CancelHandle {
 }
 
 /// yt-dlp.exe — это распаковщик + процесс Python + ffmpeg; гасим всё дерево.
+#[cfg(windows)]
 fn kill_tree(pid: u32) {
     let _ = command("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).output();
+}
+
+/// Linux/Android: процесс запущен в своей группе (`appinfo::command`) — гасим всю группу.
+#[cfg(unix)]
+fn kill_tree(pid: u32) {
+    // SAFETY: kill() только посылает сигнал; отрицательный pid — группа процессов.
+    unsafe {
+        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
 }
 
 pub type ProgressFn = Arc<dyn Fn(&Progress) + Send + Sync>;
@@ -1323,10 +1334,15 @@ fn local_stamp() -> String {
     format!("{:04}-{:02}-{:02} {:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn local_stamp() -> String {
-    let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    format!("unix {s}")
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as libc::time_t;
+    // SAFETY: localtime_r пишет только в переданную структуру.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&now, &mut tm) }.is_null() {
+        return format!("unix {now}");
+    }
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min)
 }
 
 /// Файлы «<stem>.<язык>.<ext>» рядом с видео.
@@ -1410,15 +1426,30 @@ pub fn free_gb(folder: &str) -> Option<f64> {
     (ok != 0).then(|| avail as f64 / (1u64 << 30) as f64)
 }
 
-#[cfg(not(windows))]
-pub fn free_gb(_folder: &str) -> Option<f64> {
-    None
+#[cfg(unix)]
+pub fn free_gb(folder: &str) -> Option<f64> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut root = PathBuf::from(folder);
+    while !root.exists() {
+        match root.parent() {
+            Some(p) if p != root => root = p.to_path_buf(),
+            _ => break,
+        }
+    }
+    let c = std::ffi::CString::new(root.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs пишет только в переданную структуру; путь — C-строка.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    Some(st.f_bavail as f64 * st.f_frsize as f64 / (1u64 << 30) as f64)
 }
 
 fn check_disk(folder: &str) -> R<()> {
+    let min = crate::appinfo::min_free_gb().unwrap_or(MIN_FREE_GB);
     match free_gb(folder) {
-        Some(free) if free < MIN_FREE_GB => Err(DlError::Cancelled(format!(
-            "На диске осталось {free:.1} ГБ (минимум {MIN_FREE_GB}) — загрузка остановлена."
+        Some(free) if free < min => Err(DlError::Cancelled(format!(
+            "На диске осталось {free:.1} ГБ (минимум {min}) — загрузка остановлена."
         ))),
         _ => Ok(()),
     }
@@ -1567,6 +1598,9 @@ pub fn ytdlp_version() -> Option<String> {
 /// `%APPDATA%\VeryGoodDownloader\bin` — туда можно писать без прав администратора,
 /// и она находится раньше встроенной.
 pub fn update_ytdlp(log: &dyn Fn(String)) -> Result<String, String> {
+    if crate::appinfo::tool_configured("yt-dlp") {
+        return update_ytdlp_in_place(log);
+    }
     let user_bin = data_dir().join("bin");
     let target = user_bin.join("yt-dlp.exe");
     let current = tool("yt-dlp");
@@ -1590,6 +1624,24 @@ pub fn update_ytdlp(log: &dyn Fn(String)) -> Result<String, String> {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
+    if vtuple(&after) > vtuple(&before) {
+        log(format!("yt-dlp: {before} → {after}"));
+    } else {
+        log(format!("yt-dlp уже последней версии: {after}"));
+    }
+    Ok(after)
+}
+
+/// Android: yt-dlp — zip-версия в папке приложения (её можно перезаписывать), `-U` обновляет её на месте.
+fn update_ytdlp_in_place(log: &dyn Fn(String)) -> Result<String, String> {
+    let before = ytdlp_version().unwrap_or_default();
+    log("Проверяю новую версию yt-dlp…".into());
+    let o = command(tool("yt-dlp")).arg("-U").output().map_err(|e| e.to_string())?;
+    let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    if !o.status.success() {
+        return Err(text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("ошибка").to_string());
+    }
+    let after = ytdlp_version().unwrap_or_default();
     if vtuple(&after) > vtuple(&before) {
         log(format!("yt-dlp: {before} → {after}"));
     } else {
