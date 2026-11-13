@@ -52,7 +52,9 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -103,12 +105,12 @@ private enum class Page(val label: Int) { Download(R.string.tab_download), Log(R
 @Composable
 fun App(style: String, onStyle: (String) -> Unit) {
     var page by rememberSaveable { mutableStateOf(Page.Download) }
-    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    val scroll = TopAppBarDefaults.pinnedScrollBehavior()
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
-            // Крупный заголовок, сворачивается при прокрутке (M3).
-            LargeTopAppBar(title = { Text(stringResource(page.label)) }, scrollBehavior = scroll)
+            // Один и тот же заголовок на всех экранах (крупный раскрывался по-разному в зависимости от прокрутки).
+            TopAppBar(title = { Text(stringResource(page.label)) }, scrollBehavior = scroll)
         },
         bottomBar = {
             NavigationBar {
@@ -129,6 +131,10 @@ fun App(style: String, onStyle: (String) -> Unit) {
                             )
                         },
                         label = { Text(stringResource(p.label) + if (p == Page.Download && active > 0) " · $active" else "") },
+                        colors = NavigationBarItemDefaults.colors(
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        ),
                     )
                 }
             }
@@ -241,8 +247,11 @@ private fun DownloadPage(pad: PaddingValues) {
         }
         if (jobs.isEmpty()) {
             item {
+                ShareHint()
+            }
+            item {
                 Text(
-                    "пусто — вставь ссылку выше или нажми «Поделиться» → Very Good Downloader в YouTube",
+                    "пусто — вставь ссылку выше или поделись ссылкой из YouTube",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -513,7 +522,7 @@ private fun SettingsPage(pad: PaddingValues, style: String, onStyle: (String) ->
         FilledTonalButton(enabled = !checking, onClick = {
             checking = true
             scope.launch(Dispatchers.IO) {
-                Vgd.addLog("Проверка: Me at the zoo + 1080p-ролик…")
+                Vgd.addLog("Проверка: ролик 240p (Me at the zoo) и ролик 4K (Big Buck Bunny)…")
                 try {
                     Vgd.core()
                     for (url in listOf("https://www.youtube.com/watch?v=jNQXAC9IVRw", "https://www.youtube.com/watch?v=aqz-KE-bpKQ")) {
@@ -528,7 +537,7 @@ private fun SettingsPage(pad: PaddingValues, style: String, onStyle: (String) ->
         }) { Text(if (checking) "проверяю…" else "проверить") }
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         Text(
-            "Very Good Downloader ${io.github.vivegass.vgd.core.version()} · ${ctx.packageName}",
+            "Very Good Downloader для Android ${io.github.vivegass.vgd.BuildConfig.VERSION_NAME} · ядро ${io.github.vivegass.vgd.core.version()} · yt-dlp $ytdlp\n${ctx.packageName}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -554,7 +563,35 @@ private fun Chips(options: List<Pair<Int, String>>, value: Int, onChange: (Int) 
     var v by remember(value) { mutableIntStateOf(value) }
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         options.forEach { (k, label) ->
-            FilterChip(selected = v == k, onClick = { v = k; onChange(k) }, label = { Text(label) })
+            FilterChip(
+                selected = v == k,
+                onClick = { v = k; onChange(k) },
+                label = { Text(label) },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
+            )
+        }
+    }
+}
+
+/**
+ * Как сделать «Поделиться» в одно нажатие. Свой ряд приложений в панели YouTube составляет сам YouTube
+ * (туда сторонние приложения не попадают); в системной панели («Ещё») приложение можно закрепить сверху.
+ */
+@Composable
+private fun ShareHint() {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Скачивать прямо из YouTube", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text(
+                "«Поделиться» → «Ещё» → «VGD: скачать» (или «VGD: звук»). Чтобы это было сверху: в той же панели " +
+                    "долго нажмите «VGD: скачать» → «Закрепить». В короткий ряд самого YouTube (Telegram, Discord…) " +
+                    "сторонние приложения не попадают — его составляет YouTube.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
         }
     }
 }

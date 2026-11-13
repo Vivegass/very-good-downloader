@@ -41,6 +41,10 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- ярлыки: долгое нажатие на значок и цели «Поделиться» (share-target) -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- «Поделиться», «Открыть с помощью», выделенный текст: ссылка сразу в очередь, экран не открывается -->
@@ -52,6 +56,10 @@
             android:noHistory="true"
             android:taskAffinity=""
             android:theme="@style/Theme.Vgd.Transparent">
+            <!-- Direct Share на Android 8–9 (на 10+ работают ярлыки из shortcuts.xml) -->
+            <meta-data
+                android:name="android.service.chooser.chooser_target_service"
+                android:value="androidx.sharetarget.ChooserTargetServiceCompat" />
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -74,6 +82,20 @@
                 <data android:host="youtu.be" />
             </intent-filter>
         </activity>
+
+        <!-- вторая цель в «Поделиться»: только звук -->
+        <activity-alias
+            android:name=".ShareAudio"
+            android:exported="true"
+            android:icon="@mipmap/ic_share_audio"
+            android:label="@string/share_audio_label"
+            android:targetActivity=".ShareActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity-alias>
 
         <activity
             android:name=".ClipActivity"

@@ -1,8 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Very Good Downloader</string>
-    <string name="share_label">Скачать в Very Good Downloader</string>
+    <string name="share_label">VGD: скачать</string>
+    <string name="share_audio_label">VGD: звук</string>
+    <string name="sc_video_short">Видео</string>
+    <string name="sc_video_long">Скачать видео</string>
+    <string name="sc_audio_short">Звук</string>
+    <string name="sc_audio_long">Скачать только звук</string>
     <string name="share_added">Добавлено в очередь Very Good Downloader</string>
+    <string name="share_added_audio">Добавлено в очередь: только звук</string>
     <string name="share_no_link">Нет ссылки для скачивания</string>
     <string name="clip_no_link">В буфере обмена нет ссылки</string>
     <string name="tile_label">Скачать из буфера</string>

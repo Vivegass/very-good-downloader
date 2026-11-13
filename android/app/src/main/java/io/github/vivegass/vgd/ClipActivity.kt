@@ -3,11 +3,13 @@ package io.github.vivegass.vgd
 import android.app.Activity
 import android.content.ClipboardManager
 import android.content.Context
-import android.os.Bundle
 import android.widget.Toast
 import io.github.vivegass.vgd.core.extractUrl
 
-/** Прозрачный экран для плитки: буфер обмена можно прочитать, только когда окно в фокусе. */
+/**
+ * Прозрачный экран для плитки «Скачать из буфера» и ярлыков на значке: буфер обмена можно прочитать,
+ * только когда окно в фокусе.
+ */
 class ClipActivity : Activity() {
     private var done = false
 
@@ -21,13 +23,15 @@ class ClipActivity : Activity() {
         if (url == null) {
             Toast.makeText(this, R.string.clip_no_link, Toast.LENGTH_SHORT).show()
         } else {
-            Vgd.add(this, url)
-            Toast.makeText(this, R.string.share_added, Toast.LENGTH_SHORT).show()
+            val audio = intent.getBooleanExtra(EXTRA_AUDIO, false)
+            Vgd.add(this, url, audio)
+            Shortcuts.used(this, if (audio) Shortcuts.AUDIO else Shortcuts.VIDEO)
+            Toast.makeText(this, if (audio) R.string.share_added_audio else R.string.share_added, Toast.LENGTH_SHORT).show()
         }
         finish()
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    companion object {
+        const val EXTRA_AUDIO = "io.github.vivegass.vgd.AUDIO"
     }
 }

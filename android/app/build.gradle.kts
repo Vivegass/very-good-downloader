@@ -19,8 +19,8 @@ android {
         applicationId = "io.github.vivegass.vgd"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         ndk { abiFilters += abis }
     }
 
@@ -40,7 +40,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     // youtubedl-android запускает libpython.so / libffmpeg.so / libqjs.so как программы:
     // они должны лежать распакованными в nativeLibraryDir.
@@ -127,6 +130,8 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.core:core-ktx:1.17.0")
+    // ярлыки «Поделиться» (Direct Share) в верхнем ряду системной панели
+    implementation("androidx.sharetarget:sharetarget:1.2.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 

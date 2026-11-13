@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Цели Direct Share: ярлыки «Видео» / «Звук» (Shortcuts.kt) показываются в верхнем ряду системной панели «Поделиться». -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="io.github.vivegass.vgd.ShareActivity">
+        <data android:mimeType="text/plain" />
+        <category android:name="io.github.vivegass.vgd.category.DOWNLOAD" />
+    </share-target>
+</shortcuts>

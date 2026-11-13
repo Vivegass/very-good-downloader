@@ -7,6 +7,7 @@ class VgdApp : Application() {
         super.onCreate()
         Vgd.attach(this)
         Notifications.ensureChannels(this)
+        Shortcuts.publish(this)
         // Распаковка Python/ffmpeg (первый запуск — несколько секунд) — сразу в фоне,
         // чтобы к первой ссылке всё было готово.
         Thread {
