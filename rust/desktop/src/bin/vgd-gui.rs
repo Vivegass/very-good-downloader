@@ -6,7 +6,6 @@ use egui::{
     Align, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Layout, Margin, RichText,
     Sense, Stroke, StrokeKind, TextStyle, Vec2,
 };
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -15,7 +14,8 @@ use vgd::appinfo::{open_path, reveal, APP_NAME, APP_VERSION};
 use vgd::ipc;
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use vgd::downloader::{plan_existing, update_ytdlp, ytdlp_version, CancelHandle, DlError, Downloader, Progress};
+use vgd::downloader::{plan_existing, update_ytdlp, ytdlp_version};
+use vgd::queue::{Event as QEvent, Job, Outcome, Queue, State, TicketState};
 use vgd::settings::{JobOpts, Settings, Subscription, BROWSERS};
 use vgd::theme::{self, Rgb, Theme};
 use vgd::sort::{apply_plan, default_topics, load_topics, save_topics, Topics};
@@ -369,42 +369,10 @@ enum Page {
     Log,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum State {
-    Queued,
-    Running,
-    Paused,
-    Done,
-    Error,
-    Cancelled,
-}
-
-struct Job {
-    id: u64,
-    url: String,
-    title: String,
-    stage: String,
-    item: String,
-    percent: f32,
-    speed: String,
-    eta: String,
-    message: String,
-    files: Vec<String>,
-    state: State,
-    error: String,
-    /// важная подсказка от загрузчика (например, про 100 треков Spotify)
-    notice: String,
-    /// фрагмент / только звук / параметры подписки
-    opts: JobOpts,
-    /// загрузка из подписки (её ссылка)
-    sub_url: Option<String>,
-}
-
 enum Event {
-    Progress(u64, Progress),
+    /// от рабочих нитей очереди (vgd::queue)
+    Queue(QEvent),
     Log(String),
-    Finish(u64, State, Vec<String>, Option<String>),
-    Idle,
     Status(String),
     SortPlan(Vec<(PathBuf, PathBuf)>),
     YtdlpVersion(String),
@@ -414,17 +382,6 @@ enum Event {
     SpotifyDone(Result<(), String>),
     /// вход в Яндекс: код и страница (Some) или вход закончился (None)
     YandexCode(Option<(String, String)>),
-}
-
-/// Общее между окном и рабочим потоком.
-#[derive(Default)]
-struct Shared {
-    /// ждут загрузки, в порядке карточек (пересобирается из `App::jobs` в `sync_queue`)
-    queue: VecDeque<(u64, String, JobOpts)>,
-    /// что качается сейчас: основная нить и нить для небольшой музыки
-    current: Vec<(u64, CancelHandle)>,
-    settings: Settings,
-    stop_all: bool,
 }
 
 enum Action {
@@ -444,16 +401,10 @@ struct App {
     page: Page,
     s: Settings,
     urls: String,
-    jobs: Vec<Job>,
-    next_id: u64,
+    /// очередь загрузок (общая с Android, vgd::queue): карточки, нити, пауза, порядок
+    q: Queue,
     tx: Sender<Event>,
     rx: Receiver<Event>,
-    shared: Arc<Mutex<Shared>>,
-    worker: Option<std::thread::JoinHandle<()>>,
-    /// вторая нить: небольшая музыка, пока основная занята длинной загрузкой
-    side_worker: Option<std::thread::JoinHandle<()>>,
-    /// загрузки, которые останавливаем ради паузы (а не отмены)
-    pausing: std::collections::HashSet<u64>,
     /// карточка, у которой открыты свои настройки
     edit_job: Option<u64>,
     /// поле «название нового пресета»
@@ -588,16 +539,20 @@ impl App {
         };
         Self {
             page,
-            shared: Arc::new(Mutex::new(Shared { settings: s.clone(), ..Default::default() })),
+            q: {
+                let (tx, ctx) = (tx.clone(), cc.egui_ctx.clone());
+                Queue::new(
+                    s.clone(),
+                    Arc::new(move |e| {
+                        let _ = tx.send(Event::Queue(e));
+                        ctx.request_repaint();
+                    }),
+                )
+            },
             s,
             urls: String::new(),
-            jobs: Vec::new(),
-            next_id: 1,
             tx,
             rx,
-            worker: None,
-            side_worker: None,
-            pausing: Default::default(),
             edit_job: None,
             preset_new: String::new(),
             ya_code: None,
@@ -642,7 +597,7 @@ impl App {
 
     /// Идёт загрузка (в любой из двух нитей).
     fn busy(&self) -> bool {
-        self.worker.as_ref().is_some_and(|w| !w.is_finished()) || self.side_worker.as_ref().is_some_and(|w| !w.is_finished())
+        self.q.busy()
     }
 
     fn add_log(&mut self, msg: String) {
@@ -662,7 +617,7 @@ impl App {
             self.s.out_dir = vgd::settings::default_out();
         }
         self.s.save();
-        self.shared.lock().unwrap().settings = self.s.clone();
+        self.q.set_settings(self.s.clone());
     }
 
     fn paste(&mut self) {
@@ -698,39 +653,23 @@ impl App {
     }
 
     /// Поставить ссылку в очередь.
-    fn enqueue(&mut self, url: String, opts: JobOpts, sub_url: Option<String>) {
-        let id = self.next_id;
-        self.next_id += 1;
+    fn enqueue(&mut self, url: String, opts: JobOpts, sub_url: Option<String>) -> u64 {
         let title = match &sub_url {
             Some(_) => self.s.subscriptions.iter().find(|s| s.url == url).map(|s| s.name.clone()).filter(|n| !n.is_empty()),
             None => None,
         };
-        self.jobs.push(Job {
-            id,
-            // Список треков из браузера: вместо «vgdlist:C:\…» — название плейлиста.
-            title: title.or_else(|| vgd::music::list_title(&url)).unwrap_or_else(|| url.clone()),
-            url,
-            stage: "queued".into(),
-            item: String::new(),
-            percent: 0.0,
-            speed: String::new(),
-            eta: String::new(),
-            message: String::new(),
-            files: Vec::new(),
-            state: State::Queued,
-            error: String::new(),
-            notice: String::new(),
-            opts,
-            sub_url,
-        });
-        self.sync_queue();
+        let id = self.q.add(url, opts, sub_url, title);
+        self.after_sync();
+        id
     }
 
     /// Очередь для рабочих нитей — ссылки «в очереди» в порядке карточек.
     fn sync_queue(&mut self) {
-        let q: VecDeque<_> =
-            self.jobs.iter().filter(|j| j.state == State::Queued).map(|j| (j.id, j.url.clone(), j.opts.clone())).collect();
-        self.shared.lock().unwrap().queue = q;
+        self.q.sync();
+        self.after_sync();
+    }
+
+    fn after_sync(&mut self) {
         if self.status == "все загрузки завершены" {
             self.status.clear();
         }
@@ -744,7 +683,7 @@ impl App {
                 continue;
             }
             // Уже в очереди — не дублируем.
-            if self.jobs.iter().any(|j| j.sub_url.as_deref() == Some(&sub.url) && matches!(j.state, State::Queued | State::Running | State::Paused)) {
+            if self.q.jobs.iter().any(|j| j.sub_url.as_deref() == Some(&sub.url) && matches!(j.state, State::Queued | State::Running | State::Paused)) {
                 continue;
             }
             let opts = JobOpts { audio_only: sub.audio_only, max_age_days: sub.max_age_days, seed_only: !sub.seeded, ..Default::default() };
@@ -754,114 +693,46 @@ impl App {
         self.start_worker(&ctx);
     }
 
-    fn start_worker(&mut self, ctx: &egui::Context) {
-        if !self.worker.as_ref().is_some_and(|w| !w.is_finished()) {
-            self.shared.lock().unwrap().stop_all = false;
-            let (shared, tx, ctx) = (self.shared.clone(), self.tx.clone(), ctx.clone());
-            self.worker = Some(std::thread::spawn(move || work(shared, tx, ctx, false)));
-        }
-        // Небольшую музыку качаем рядом с основной нитью, не дожидаясь очереди.
-        let side_busy = self.side_worker.as_ref().is_some_and(|w| !w.is_finished());
-        let small = self.shared.lock().unwrap().queue.iter().any(|(_, u, _)| vgd::music::is_small_music(u));
-        if !side_busy && small {
-            let (shared, tx, ctx) = (self.shared.clone(), self.tx.clone(), ctx.clone());
-            self.side_worker = Some(std::thread::spawn(move || work(shared, tx, ctx, true)));
-        }
-    }
-
-    fn cancel_running(&self, id: u64) -> bool {
-        let c = self.shared.lock().unwrap().current.iter().find(|(cid, _)| *cid == id).map(|(_, c)| c.clone());
-        match c {
-            Some(c) => {
-                std::thread::spawn(move || c.cancel());
-                true
-            }
-            None => false,
-        }
+    fn start_worker(&mut self, _ctx: &egui::Context) {
+        self.q.start();
     }
 
     fn apply(&mut self, a: Action) {
         match a {
             Action::Cancel(id) => {
-                let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) else { return };
-                match j.state {
-                    State::Queued | State::Paused => {
-                        j.state = State::Cancelled;
-                        j.stage = "cancel".into();
-                        j.message.clear();
-                        self.sync_queue();
-                    }
-                    State::Running => {
-                        self.pausing.remove(&id);
-                        if self.cancel_running(id) {
-                            self.status = "отменяю загрузку…".into();
-                        }
-                    }
-                    _ => {}
+                if self.q.cancel(id) {
+                    self.status = "отменяю загрузку…".into();
                 }
+                self.after_sync();
             }
-            // Пауза: ссылка остаётся на своём месте, «продолжить» докачает с того же места
-            // (скачанное пропустится по архиву, недокачанный файл yt-dlp продолжит).
+            // Пауза: ссылка остаётся на своём месте, «продолжить» докачает с того же места.
             Action::Pause(id) => {
-                let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) else { return };
-                match j.state {
-                    State::Queued => {
-                        j.state = State::Paused;
-                        j.stage = "paused".into();
-                        self.sync_queue();
-                    }
-                    State::Running => {
-                        j.message = "ставлю на паузу…".into();
-                        self.pausing.insert(id);
-                        self.cancel_running(id);
-                    }
-                    _ => {}
-                }
+                self.q.pause(id);
+                self.after_sync();
             }
             Action::Resume(id) => {
-                if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id && j.state == State::Paused) {
-                    j.state = State::Queued;
-                    j.stage = "queued".into();
-                    j.message.clear();
-                }
-                self.sync_queue();
-                let ctx = self.ctx.clone();
-                self.start_worker(&ctx);
+                self.q.resume(id);
+                self.after_sync();
             }
             Action::Move(id, dir) => {
-                if let Some(i) = self.jobs.iter().position(|j| j.id == id) {
-                    let k = i as i64 + dir as i64;
-                    if k >= 0 && (k as usize) < self.jobs.len() {
-                        self.jobs.swap(i, k as usize);
-                        self.sync_queue();
-                    }
-                }
+                self.q.move_job(id, dir);
+                self.after_sync();
             }
             Action::EditOpts(id) => {
                 self.edit_job = if self.edit_job == Some(id) { None } else { Some(id) };
             }
-            Action::Remove(id) => self.jobs.retain(|j| j.id != id),
+            Action::Remove(id) => self.q.remove(id),
             // Повторить отменённую или упавшую загрузку: скачанное раньше пропустится по архиву.
             Action::Retry(id) => {
-                if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
-                    j.state = State::Queued;
-                    j.stage = "queued".into();
-                    j.error.clear();
-                    j.notice.clear();
-                    j.message.clear();
-                    j.percent = 0.0;
-                    j.files.clear();
-                }
-                self.sync_queue();
-                let ctx = self.ctx.clone();
-                self.start_worker(&ctx);
+                self.q.retry(id);
+                self.after_sync();
             }
             Action::Reveal(f) => reveal(Path::new(&f)),
         }
     }
 
     fn clear_done(&mut self) {
-        self.jobs.retain(|j| matches!(j.state, State::Queued | State::Running | State::Paused));
+        self.q.clear_done();
     }
 
     fn update_ytdlp(&mut self, ctx: &egui::Context) {
@@ -998,92 +869,21 @@ impl App {
     fn handle_events(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
-                Event::Progress(id, p) => {
-                    if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
-                        j.state = State::Running;
-                        if !p.title.is_empty() {
-                            j.title = p.title.clone();
+                Event::Queue(ev) => match self.q.handle(ev) {
+                    Outcome::Log(m) => self.add_log(m),
+                    Outcome::Finished(id) => self.on_finished(id),
+                    Outcome::Idle => {
+                        let active = self.q.active();
+                        if !active && !self.q.jobs.iter().any(|j| j.state == State::Error) && !self.q.jobs.is_empty() {
+                            self.status = "все загрузки завершены".into();
                         }
-                        j.stage = p.stage.clone();
-                        j.item = p.item.clone();
-                        j.percent = p.percent;
-                        j.speed = p.speed.clone();
-                        j.eta = p.eta.clone();
-                        j.message = p.message.clone();
-                        if !p.notice.is_empty() {
-                            j.notice = p.notice.clone();
+                        if !active && self.status.starts_with("отменяю") {
+                            self.status.clear();
                         }
                     }
-                }
+                    Outcome::Progress(_) => {}
+                },
                 Event::Log(m) => self.add_log(m),
-                Event::Finish(id, state, files, err) => {
-                    // Остановили ради паузы — карточка «на паузе», а не «отменено».
-                    let state = if self.pausing.remove(&id) && state == State::Cancelled { State::Paused } else { state };
-                    if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
-                        j.state = state;
-                        j.stage = match state {
-                            State::Done => "done",
-                            State::Error => "error",
-                            State::Paused => "paused",
-                            _ => "cancel",
-                        }
-                        .into();
-                        j.percent = if state == State::Done { 100.0 } else { 0.0 };
-                        j.speed.clear();
-                        j.eta.clear();
-                        j.item.clear();
-                        j.message = if state == State::Done {
-                            if files.is_empty() {
-                                "новых видео нет — всё уже скачано раньше".into()
-                            } else {
-                                format!("файлов: {}", files.len())
-                            }
-                        } else {
-                            String::new()
-                        };
-                        j.files = files;
-                        j.error = err
-                            .map(|e| e.lines().next().unwrap_or("").chars().take(200).collect())
-                            .unwrap_or_default();
-                    }
-                    let job = self.jobs.iter().find(|j| j.id == id).map(|j| (j.files.clone(), j.title.clone(), j.sub_url.clone(), j.state));
-                    if let Some((files, title, sub_url, st)) = job {
-                        // Подписка проверена: запоминаем, что «старое» уже учтено, и время проверки.
-                        if let (Some(url), State::Done) = (sub_url, st) {
-                            if let Some(sub) = self.s.subscriptions.iter_mut().find(|s| s.url == url) {
-                                sub.seeded = true;
-                                sub.last_check = now_secs();
-                                if sub.name.is_empty() && !title.starts_with("http") {
-                                    sub.name = title.clone();
-                                }
-                            }
-                            self.save_settings();
-                        }
-                        // Уведомление Windows: щелчок открывает папку с файлом.
-                        if self.s.notify_done && st == State::Done && !files.is_empty() {
-                            let dir = Path::new(&files[0]).parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(&self.s.out_dir));
-                            vgd::appinfo::toast("Скачано", &format!("{title} · файлов: {}", files.len()), &dir);
-                        }
-                        // Окно спрятано — без уведомления об ошибке никто бы не узнал, что не скачалось.
-                        if self.s.notify_done && st == State::Error && self.hidden {
-                            let err = self.jobs.iter().find(|j| j.id == id).map(|j| j.error.clone()).unwrap_or_default();
-                            vgd::appinfo::toast("Не скачалось", &format!("{title} · {err}"), Path::new(&self.s.out_dir));
-                        }
-                    }
-                }
-                Event::Idle => {
-                    let active = self.jobs.iter().any(|j| matches!(j.state, State::Queued | State::Running));
-                    if !active && !self.jobs.iter().any(|j| j.state == State::Error) && !self.jobs.is_empty() {
-                        self.status = "все загрузки завершены".into();
-                    }
-                    if !active && self.status.starts_with("отменяю") {
-                        self.status.clear();
-                    }
-                    // Нить закончила, а в очереди что-то появилось, пока она останавливалась, — запустить снова.
-                    if self.jobs.iter().any(|j| j.state == State::Queued) {
-                        self.start_worker(ctx);
-                    }
-                }
                 Event::YandexCode(c) => {
                     if c.is_none() {
                         self.side_task = false;
@@ -1124,13 +924,10 @@ impl App {
                 Event::External(ipc::Incoming::Add { urls, ticket }) => {
                     if !urls.is_empty() {
                         let n = urls.len();
-                        let first = self.next_id;
                         let opts = self.next_opts.clone();
-                        for url in urls {
-                            self.enqueue(url, opts.clone(), None);
-                        }
+                        let ids: Vec<u64> = urls.into_iter().map(|url| self.enqueue(url, opts.clone(), None)).collect();
                         if let Some(t) = ticket {
-                            self.tickets.push((t, (first..self.next_id).collect()));
+                            self.tickets.push((t, ids));
                         }
                         self.start_worker(ctx);
                         self.add_log(format!("Из браузера: ссылок {n}"));
@@ -1151,32 +948,56 @@ impl App {
         self.update_tickets();
     }
 
+    /// Загрузка закончилась: подписка запоминает проверку, уведомление Windows.
+    fn on_finished(&mut self, id: u64) {
+        let job = self.q.job(id).map(|j| (j.files.clone(), j.title.clone(), j.sub_url.clone(), j.state, j.error.clone()));
+        let Some((files, title, sub_url, st, err)) = job else { return };
+        // Подписка проверена: запоминаем, что «старое» уже учтено, и время проверки.
+        if let (Some(url), State::Done) = (sub_url, st) {
+            if let Some(sub) = self.s.subscriptions.iter_mut().find(|s| s.url == url) {
+                sub.seeded = true;
+                sub.last_check = now_secs();
+                if sub.name.is_empty() && !title.starts_with("http") {
+                    sub.name = title.clone();
+                }
+            }
+            self.save_settings();
+        }
+        // Уведомление Windows: щелчок открывает папку с файлом.
+        if self.s.notify_done && st == State::Done && !files.is_empty() {
+            let dir = Path::new(&files[0]).parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(&self.s.out_dir));
+            vgd::appinfo::toast("Скачано", &format!("{title} · файлов: {}", files.len()), &dir);
+        }
+        // Окно спрятано — без уведомления об ошибке никто бы не узнал, что не скачалось.
+        if self.s.notify_done && st == State::Error && self.hidden {
+            vgd::appinfo::toast("Не скачалось", &format!("{title} · {err}"), Path::new(&self.s.out_dir));
+        }
+    }
+
     /// Состояние заявок из браузера/Spotify для `GET /status`: пока что-то ждёт или качается — `queued`/`running`,
     /// потом `done` (что-то скачалось) или `error`. Законченные заявки больше не пересчитываем.
     fn update_tickets(&mut self) {
         if self.tickets.is_empty() {
             return;
         }
-        let jobs = &self.jobs;
-        self.tickets.retain(|(t, ids)| {
-            let mine: Vec<&Job> = jobs.iter().filter(|j| ids.contains(&j.id)).collect();
-            if mine.iter().any(|j| j.state == State::Running) {
-                let p = mine.iter().find(|j| j.state == State::Running).map(|j| j.percent).unwrap_or(0.0);
+        let q = &self.q;
+        self.tickets.retain(|(t, ids)| match q.ticket_state(ids) {
+            TicketState::Running(p) => {
                 ipc::set_ticket(*t, "running", &format!("{p:.0}%"));
-                return true;
+                true
             }
-            if mine.iter().any(|j| matches!(j.state, State::Queued | State::Paused)) {
+            TicketState::Queued => {
                 ipc::set_ticket(*t, "queued", "");
-                return true;
+                true
             }
-            let files: usize = mine.iter().map(|j| j.files.len()).sum();
-            match mine.iter().find(|j| j.state == State::Error) {
-                Some(j) if files == 0 => ipc::set_ticket(*t, "error", &j.error),
-                _ if mine.iter().all(|j| j.state == State::Cancelled) => ipc::set_ticket(*t, "error", "отменено"),
-                _ if files == 0 => ipc::set_ticket(*t, "done", "уже было скачано раньше"),
-                _ => ipc::set_ticket(*t, "done", &format!("файлов: {files}")),
+            TicketState::Done(m) => {
+                ipc::set_ticket(*t, "done", &m);
+                false
             }
-            false
+            TicketState::Error(m) => {
+                ipc::set_ticket(*t, "error", &m);
+                false
+            }
         });
     }
 
@@ -1184,7 +1005,7 @@ impl App {
 
     /// Пункты навигации: страница, значок, подпись, число в кружке.
     fn nav_pages(&self) -> [(Page, char, &'static str, Option<usize>); 4] {
-        let running = self.jobs.iter().filter(|j| matches!(j.state, State::Queued | State::Running)).count();
+        let running = self.q.jobs.iter().filter(|j| matches!(j.state, State::Queued | State::Running)).count();
         let badge = (running > 0).then_some(running);
         [
             (Page::Download, I_DOWNLOAD, "скачать", badge),
@@ -1545,7 +1366,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("очередь").size(14.0).color(pal().text));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if self.jobs.iter().any(|j| !matches!(j.state, State::Queued | State::Running))
+                        if self.q.jobs.iter().any(|j| !matches!(j.state, State::Queued | State::Running))
                             && link(ui, "убрать готовые").clicked()
                         {
                             self.clear_done();
@@ -1553,18 +1374,18 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                     });
                 });
                 ui.add_space(4.0);
-                if self.jobs.is_empty() {
+                if self.q.jobs.is_empty() {
                     egui::Frame::new().stroke(Stroke::new(1.0, pal().outline)).corner_radius(rad(12)).inner_margin(margin(14.0, 14.0)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(RichText::new("пусто — вставь ссылку выше или нажми «скачать» в браузере").size(12.0).color(pal().faint));
                     });
                 }
                 let mut actions = Vec::new();
-                let n = self.jobs.len();
+                let n = self.q.jobs.len();
                 let mut opts_changed = false;
                 for i in 0..n {
-                    job_card(ui, &self.jobs[i], i == 0, i + 1 == n, &mut actions);
-                    let j = &mut self.jobs[i];
+                    job_card(ui, &self.q.jobs[i], i == 0, i + 1 == n, &mut actions);
+                    let j = &mut self.q.jobs[i];
                     if self.edit_job == Some(j.id) && matches!(j.state, State::Queued | State::Paused) {
                         ui.add_space(2.0);
                         let music = vgd::music::is_music_url(&j.url);
@@ -2474,14 +2295,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
             ui.add_space(14.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if pill(ui, None, "выйти", true, true).clicked() {
-                    {
-                        let mut sh = self.shared.lock().unwrap();
-                        sh.stop_all = true;
-                        sh.queue.clear();
-                        for (_, c) in sh.current.clone() {
-                            c.cancel();
-                        }
-                    }
+                    self.q.stop_all();
                     self.exiting = true;
                     self.confirm_exit = false;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2549,14 +2363,7 @@ impl eframe::App for App {
             } else if e.id == self.tray_quit {
                 self.show_window(ctx);
                 self.exiting = true;
-                {
-                    let mut sh = self.shared.lock().unwrap();
-                    sh.stop_all = true;
-                    sh.queue.clear();
-                    for (_, c) in sh.current.clone() {
-                        c.cancel();
-                    }
-                }
+                self.q.stop_all();
                 self.save_settings();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -2607,7 +2414,7 @@ impl eframe::App for App {
                         let first = self.clip_last.is_empty();
                         self.clip_last = t.clone();
                         // То, что было в буфере ещё до запуска, не предлагаем.
-                        if !first && supported_link(&t) && !self.jobs.iter().any(|j| j.url == t) && self.urls.trim() != t {
+                        if !first && supported_link(&t) && !self.q.jobs.iter().any(|j| j.url == t) && self.urls.trim() != t {
                             self.clip_offer = Some(t);
                         }
                     }
@@ -3325,62 +3132,6 @@ fn supported_link(t: &str) -> bool {
 
 fn info(title: &str, text: &str) {
     rfd::MessageDialog::new().set_title(title).set_description(text).set_level(rfd::MessageLevel::Info).show();
-}
-
-/// Рабочий поток: берёт ссылки из очереди по одной. `side` — вторая нить: только небольшая музыка.
-fn work(shared: Arc<Mutex<Shared>>, tx: Sender<Event>, ctx: egui::Context, side: bool) {
-    loop {
-        let (id, url, settings, opts) = {
-            let mut sh = shared.lock().unwrap();
-            if sh.stop_all {
-                break;
-            }
-            let pos = if side {
-                sh.queue.iter().position(|(_, u, _)| vgd::music::is_small_music(u))
-            } else if sh.queue.is_empty() {
-                None
-            } else {
-                Some(0)
-            };
-            match pos.and_then(|i| sh.queue.remove(i)) {
-                // Общие настройки → пресет → свои значения ссылки.
-                Some((id, url, opts)) => (id, url, sh.settings.for_job(&opts), opts),
-                None => break,
-            }
-        };
-        let (ptx, pctx, ltx, lctx) = (tx.clone(), ctx.clone(), tx.clone(), ctx.clone());
-        let mut dl = Downloader::new(
-            settings,
-            Arc::new(move |p: &Progress| {
-                let _ = ptx.send(Event::Progress(id, p.clone()));
-                pctx.request_repaint();
-            }),
-            Arc::new(move |m: String| {
-                let _ = ltx.send(Event::Log(m));
-                lctx.request_repaint();
-            }),
-        );
-        dl.opts = opts;
-        shared.lock().unwrap().current.push((id, dl.cancel_handle()));
-        let ev = match dl.run(&url) {
-            Ok(files) => Event::Finish(id, State::Done, files, None),
-            Err(DlError::Cancelled(m)) => {
-                if !m.is_empty() {
-                    let _ = tx.send(Event::Log(m.clone()));
-                }
-                Event::Finish(id, State::Cancelled, Vec::new(), if m.is_empty() { None } else { Some(m) })
-            }
-            Err(DlError::Failed(m)) => {
-                let _ = tx.send(Event::Log(format!("Ошибка ({url}): {m}")));
-                Event::Finish(id, State::Error, Vec::new(), Some(m))
-            }
-        };
-        shared.lock().unwrap().current.retain(|(cid, _)| *cid != id);
-        let _ = tx.send(ev);
-        ctx.request_repaint();
-    }
-    let _ = tx.send(Event::Idle);
-    ctx.request_repaint();
 }
 
 thread_local! {

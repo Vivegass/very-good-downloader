@@ -8,6 +8,7 @@ pub mod http;
 pub mod media;
 pub mod music;
 pub mod net;
+pub mod queue;
 pub mod settings;
 pub mod sort;
 pub mod theme;
