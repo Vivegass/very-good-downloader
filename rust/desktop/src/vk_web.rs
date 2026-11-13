@@ -18,7 +18,7 @@ use crate::appinfo::{command, data_dir};
 pub use vgd_core::vk::VkHit;
 use vgd_core::vk::VkBackend;
 
-const AGENT_JS: &str = include_str!("vk_agent.js");
+use vgd_core::vk::AGENT_JS;
 
 fn webview_dir() -> PathBuf {
     data_dir().join("webview2")

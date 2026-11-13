@@ -116,11 +116,11 @@ fn strip_ansi(s: &str) -> String {
 
 /// Последний Spicetify с GitHub: (версия, ссылка на zip для Windows x64).
 fn latest_spicetify() -> Result<(String, String), String> {
-    let o = command("curl.exe")
-        .args(["-s", "-S", "-L", "--max-time", "30", "-H", "User-Agent: VeryGoodDownloader", "https://api.github.com/repos/spicetify/cli/releases/latest"])
-        .output()
-        .map_err(|e| format!("curl: {e}"))?;
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout).map_err(|_| "GitHub не ответил".to_string())?;
+    let v = crate::http::get("https://api.github.com/repos/spicetify/cli/releases/latest")
+        .ua("VeryGoodDownloader")
+        .timeout(30)
+        .json()
+        .map_err(|_| "GitHub не ответил".to_string())?;
     let ver = v["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
     let url = v["assets"]
         .as_array()
@@ -159,12 +159,7 @@ fn ensure_spicetify(log: &dyn Fn(String)) -> Result<PathBuf, String> {
     let dir = env_dir("LOCALAPPDATA").join("spicetify");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let zip = std::env::temp_dir().join(format!("spicetify-{ver}.zip"));
-    let ok = command("curl.exe")
-        .args(["-s", "-S", "-L", "--max-time", "300", "-o"])
-        .arg(&zip)
-        .arg(&url)
-        .status()
-        .is_ok_and(|s| s.success());
+    let ok = crate::http::get(&url).ua("VeryGoodDownloader").timeout(300).download(&zip).is_ok_and(|code| code < 400);
     if !ok {
         return Err("не удалось скачать Spicetify".into());
     }

@@ -4,6 +4,7 @@
 pub mod appinfo;
 pub mod downloader;
 pub mod fingerprint;
+pub mod http;
 pub mod media;
 pub mod music;
 pub mod net;

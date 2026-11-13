@@ -7,6 +7,9 @@
 
 use std::sync::{Arc, RwLock};
 
+/// Код, который выполняется на странице vk.com (поиск, расшифровка ссылок на звук). Общий для WebView2 и Android.
+pub const AGENT_JS: &str = include_str!("vk_agent.js");
+
 /// Найденный в VK трек: ссылка на звук (HLS), название, исполнитель, длительность, обложка.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VkHit {

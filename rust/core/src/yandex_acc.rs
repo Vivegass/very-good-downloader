@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use std::path::PathBuf;
 
-use crate::appinfo::{command, data_dir};
+use crate::appinfo::data_dir;
 
 const OAUTH: &str = "https://oauth.yandex.ru";
 const API: &str = "https://api.music.yandex.net";
@@ -39,20 +39,10 @@ pub fn logout() {
     let _ = std::fs::remove_file(token_file());
 }
 
-fn curl(args: &[&str]) -> Result<Value, String> {
-    let o = command("curl.exe")
-        .args(["-s", "-S", "-L", "--compressed", "--max-time", "30", "--retry", "2"])
-        .args(args)
-        .output()
-        .map_err(|e| format!("curl: {e}"))?;
-    if !o.status.success() {
-        return Err(format!("сеть: {}", String::from_utf8_lossy(&o.stderr).trim()));
-    }
-    serde_json::from_slice(&o.stdout).map_err(|_| "Яндекс ответил непонятно".to_string())
-}
-
-fn form(pairs: &[(&str, &str)]) -> Vec<String> {
-    pairs.iter().flat_map(|(k, v)| ["--data-urlencode".to_string(), format!("{k}={v}")]).collect()
+/// Запрос как раньше у curl: 30 с, 2 повтора; ответ — JSON.
+fn send(r: crate::http::Request) -> Result<Value, String> {
+    let resp = r.timeout(30).retries(2).send()?;
+    serde_json::from_slice(&resp.body).map_err(|_| "Яндекс ответил непонятно".to_string())
 }
 
 /// Начало входа: код, который пользователь вводит на странице Яндекса.
@@ -67,9 +57,11 @@ pub struct DeviceCode {
 pub fn device_start() -> Result<DeviceCode, String> {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let device_id = format!("{:032x}", t ^ ((std::process::id() as u128) << 64));
-    let mut args: Vec<String> = form(&[("client_id", CLIENT_ID), ("device_id", &device_id), ("device_name", "Very Good Downloader")]);
-    args.push(format!("{OAUTH}/device/code"));
-    let v = curl(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let v = send(crate::http::post(&format!("{OAUTH}/device/code")).form(&[
+        ("client_id", CLIENT_ID),
+        ("device_id", &device_id),
+        ("device_name", "Very Good Downloader"),
+    ]))?;
     Ok(DeviceCode {
         device_code: v["device_code"].as_str().ok_or_else(|| format!("Яндекс: {}", v["error_description"].as_str().unwrap_or("не дал код")))?.to_string(),
         user_code: v["user_code"].as_str().unwrap_or("").to_string(),
@@ -81,9 +73,12 @@ pub fn device_start() -> Result<DeviceCode, String> {
 
 /// Опрос: Ok(true) — вошли (токен сохранён), Ok(false) — пользователь ещё не подтвердил.
 pub fn device_poll(device_code: &str) -> Result<bool, String> {
-    let mut args = form(&[("grant_type", "device_code"), ("code", device_code), ("client_id", CLIENT_ID), ("client_secret", CLIENT_SECRET)]);
-    args.push(format!("{OAUTH}/token"));
-    let v = curl(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let v = send(crate::http::post(&format!("{OAUTH}/token")).form(&[
+        ("grant_type", "device_code"),
+        ("code", device_code),
+        ("client_id", CLIENT_ID),
+        ("client_secret", CLIENT_SECRET),
+    ]))?;
     if let Some(t) = v["access_token"].as_str() {
         let saved = json!({ "access_token": t, "refresh_token": v["refresh_token"], "expires_in": v["expires_in"] });
         std::fs::write(token_file(), saved.to_string()).map_err(|e| e.to_string())?;
@@ -110,13 +105,14 @@ pub fn login(show: &dyn Fn(&str, &str)) -> Result<(), String> {
     Err("время на вход вышло — попробуйте ещё раз".into())
 }
 
+/// GET от имени вошедшего пользователя; `extra` — дополнительные заголовки «Имя: значение».
 fn auth_get(url: &str, extra: &[&str]) -> Result<Value, String> {
     let token = token().ok_or("нет входа в Яндекс Музыку")?;
-    let auth = format!("Authorization: OAuth {token}");
-    let mut args: Vec<&str> = vec!["-H", &auth];
-    args.extend_from_slice(extra);
-    args.push(url);
-    let v = curl(&args)?;
+    let mut r = crate::http::get(url).header("Authorization", &format!("OAuth {token}"));
+    for h in extra {
+        r = r.header_line(h);
+    }
+    let v = send(r)?;
     if v["error"].is_object() || v["error"].is_string() {
         let msg = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("ошибка");
         if msg.contains("session-expired") || msg.contains("Unauthorized") || msg.contains("not-allowed") {
@@ -148,7 +144,7 @@ pub fn file_url(track_id: &str, lossless: bool) -> Result<(String, String), Stri
         enc(&sign)
     );
     let client = format!("X-Yandex-Music-Client: {DESKTOP_CLIENT}");
-    let v = auth_get(&url, &["-H", &client])?;
+    let v = auth_get(&url, &[&client])?;
     let info = &v["result"]["downloadInfo"];
     let link = info["url"].as_str().or_else(|| info["urls"].as_array().and_then(|a| a.first()).and_then(Value::as_str));
     if info["transport"].as_str().is_some_and(|t| t != "raw") || info["key"].as_str().is_some_and(|k| !k.is_empty()) {

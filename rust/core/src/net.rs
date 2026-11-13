@@ -134,15 +134,11 @@ pub fn is_network_error(text: &str) -> bool {
 pub fn online() -> bool {
     let proxy = current_proxy();
     ["https://www.youtube.com/generate_204", "https://www.gstatic.com/generate_204"].iter().any(|url| {
-        let mut c = crate::appinfo::command("curl.exe");
-        c.args(["-s", "-o", "NUL", "-m", "8", "-w", "%{http_code}"]);
+        let mut r = crate::http::get(url).timeout(8).no_follow();
         if let Some(p) = &proxy {
-            c.args(["-x", &format!("http://{}", p.addr())]);
+            r = r.proxy(&format!("http://{}", p.addr()));
         }
-        c.arg(url).output().is_ok_and(|o| {
-            let code = String::from_utf8_lossy(&o.stdout);
-            code.starts_with('2') || code.starts_with('3')
-        })
+        r.status().is_ok_and(|code| (200..400).contains(&code))
     })
 }
 

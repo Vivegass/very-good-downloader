@@ -14,7 +14,7 @@
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-use crate::appinfo::{command, data_dir};
+use crate::appinfo::data_dir;
 use crate::settings::Settings;
 
 #[derive(Clone, Debug, Default)]
@@ -127,35 +127,30 @@ pub fn resolve(url: &str, s: &Settings, log: &dyn Fn(String)) -> Option<Result<M
     None
 }
 
-// ---------- HTTP через curl.exe (есть в Windows 10/11; сам учитывает HTTPS_PROXY) ----------
+// ---------- HTTP (crate::http; раньше curl.exe) ----------
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36";
 
-fn curl(args: &[&str]) -> Result<String, String> {
-    let o = command("curl.exe")
-        .args(["-s", "-S", "-L", "--compressed", "--max-time", "40", "--retry", "3", "--retry-delay", "2", "-A", UA])
-        .args(args)
-        .output()
-        .map_err(|e| format!("curl: {e}"))?;
-    if !o.status.success() {
-        return Err(format!("сеть: {}", String::from_utf8_lossy(&o.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+/// Запрос с теми же настройками, что были у curl: 40 с, 3 повтора, браузерный User-Agent.
+fn req(url: &str) -> crate::http::Request {
+    crate::http::get(url).ua(UA).timeout(40).retries(3)
+}
+
+fn fetch(url: &str) -> Result<String, String> {
+    req(url).text()
 }
 
 fn get_json(url: &str, headers: &[String]) -> Result<Value, String> {
-    let mut args: Vec<&str> = Vec::new();
+    let mut r = req(url);
     for h in headers {
-        args.push("-H");
-        args.push(h);
+        r = r.header_line(h);
     }
-    args.push(url);
-    let text = curl(&args)?;
+    let text = r.text()?;
     serde_json::from_str(&text).map_err(|_| format!("непонятный ответ от {}", host(url)))
 }
 
 fn host(url: &str) -> &str {
-    url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url)
+    crate::http::host(url)
 }
 
 fn s(v: &Value, k: &str) -> String {
@@ -178,9 +173,8 @@ fn spotify(url: &str, st: &Settings, log: &dyn Fn(String)) -> Result<MusicList, 
     let mut url = url.to_string();
     if url.contains("spotify.link/") {
         // короткая ссылка из приложения → полная
-        let o = command("curl.exe").args(["-s", "-o", "NUL", "-w", "%{url_effective}", "-L", "-A", UA, &url]).output();
-        if let Ok(o) = o {
-            url = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if let Ok(u) = req(&url).retries(0).final_url() {
+            url = u;
         }
     }
     let (kind, id) = spotify_ref(&url).ok_or("не понял ссылку Spotify")?;
@@ -209,7 +203,7 @@ fn spotify(url: &str, st: &Settings, log: &dyn Fn(String)) -> Result<MusicList, 
 
 /// Встраиваемый плеер: без ключей, но не больше 100 треков.
 fn spotify_embed(kind: &str, id: &str) -> Result<MusicList, String> {
-    let html = curl(&[&format!("https://open.spotify.com/embed/{kind}/{id}")])?;
+    let html = fetch(&format!("https://open.spotify.com/embed/{kind}/{id}"))?;
     let start = html.find("<script id=\"__NEXT_DATA__\"").ok_or("Spotify не отдал страницу плеера")?;
     let body_start = html[start..].find('>').map(|i| start + i + 1).ok_or("Spotify: нет данных")?;
     let end = html[body_start..].find("</script>").map(|i| body_start + i).ok_or("Spotify: нет данных")?;
@@ -252,8 +246,13 @@ fn spotify_embed(kind: &str, id: &str) -> Result<MusicList, String> {
 }
 
 fn spotify_token(st: &Settings) -> Result<String, String> {
-    let auth = format!("{}:{}", st.spotify_id.trim(), st.spotify_secret.trim());
-    let text = curl(&["-X", "POST", "-u", &auth, "-d", "grant_type=client_credentials", "https://accounts.spotify.com/api/token"])?;
+    let text = crate::http::post("https://accounts.spotify.com/api/token")
+        .ua(UA)
+        .timeout(40)
+        .retries(3)
+        .basic_auth(st.spotify_id.trim(), st.spotify_secret.trim())
+        .form(&[("grant_type", "client_credentials")])
+        .text()?;
     let v: Value = serde_json::from_str(&text).map_err(|_| "непонятный ответ")?;
     v["access_token"]
         .as_str()
@@ -414,7 +413,7 @@ fn apple(url: &str) -> Result<MusicList, String> {
 
 /// Плейлист: список лежит в данных страницы (`serialized-server-data`).
 fn apple_playlist(url: &str) -> Result<MusicList, String> {
-    let html = curl(&[url])?;
+    let html = fetch(url)?;
     let start = html.find("id=\"serialized-server-data\"").ok_or("Apple Music не отдал страницу плейлиста")?;
     let body = html[start..].find('>').map(|i| start + i + 1).ok_or("Apple Music: нет данных")?;
     let end = html[body..].find("</script>").map(|i| body + i).ok_or("Apple Music: нет данных")?;
@@ -697,10 +696,9 @@ pub fn odesli(t: &Track, key: &str) -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// Скачать файл по ссылке (curl).
+/// Скачать файл по ссылке.
 pub fn download_to(url: &str, path: &Path) -> Result<(), String> {
-    let p = path.to_string_lossy().into_owned();
-    curl(&["-o", &p, url])?;
+    req(url).download(path)?;
     if path.metadata().map(|m| m.len()).unwrap_or(0) < 1000 {
         return Err("файл не скачался".into());
     }

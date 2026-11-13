@@ -14,6 +14,8 @@ serde_json.workspace = true
 hmac = "0.13.0"
 sha2 = "0.11.1"
 base64 = "0.23.1"
+# HTTP вместо curl.exe: rustls + встроенные корневые сертификаты, gzip, SOCKS-прокси
+ureq = { version = "3.5", default-features = false, features = ["rustls", "gzip", "socks-proxy"] }
 
 [target.'cfg(windows)'.dependencies]
 # только системный прокси Windows (net.rs)
