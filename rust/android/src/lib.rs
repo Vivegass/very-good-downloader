@@ -342,6 +342,75 @@ pub fn update_ytdlp() -> Result<String, VgdError> {
     vgd_core::downloader::update_ytdlp(&|_| {}).map_err(fail)
 }
 
+// ---------- проверка (этап 0) ----------
+
+fn run(args: &[&str], tool_name: &str) -> (bool, String) {
+    use vgd_core::appinfo::{command, tool};
+    match command(tool(tool_name)).args(args).output() {
+        Ok(o) => (
+            o.status.success(),
+            format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)),
+        ),
+        Err(e) => (false, format!("не запустился {tool_name}: {e}")),
+    }
+}
+
+/// Форматы ролика: (сколько, лучшая высота, есть ли VP9/AV1 1080p+).
+fn formats(url: &str, js: bool) -> Result<(usize, u64, bool), String> {
+    let mut args = vec!["-J", "--no-playlist", "--skip-download"];
+    if !js {
+        args.push("--no-js-runtimes");
+    }
+    args.push(url);
+    let (ok, out) = run(&args, "yt-dlp");
+    let start = out.find('{').ok_or_else(|| last_line(&out))?;
+    let v: serde_json::Value = serde_json::from_str(out[start..].lines().next().unwrap_or("")).map_err(|_| last_line(&out))?;
+    if !ok && v.is_null() {
+        return Err(last_line(&out));
+    }
+    let f = v["formats"].as_array().cloned().unwrap_or_default();
+    let best = f.iter().filter_map(|x| x["height"].as_u64()).max().unwrap_or(0);
+    let hd_vp9 = f.iter().any(|x| {
+        x["height"].as_u64().unwrap_or(0) >= 1080
+            && x["vcodec"].as_str().is_some_and(|c| c.starts_with("vp9") || c.starts_with("vp09") || c.starts_with("av01"))
+    });
+    Ok((f.len(), best, hd_vp9))
+}
+
+fn last_line(s: &str) -> String {
+    s.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("нет ответа").chars().take(300).collect()
+}
+
+/// Проверка этапа 0 на телефоне: yt-dlp, кодеки и фильтры ffmpeg, форматы YouTube с QuickJS и без.
+/// Долго (до минуты) — звать не из главной нити. Каждая строка — в журнал.
+#[uniffi::export]
+pub fn diagnose(url: String) -> Vec<String> {
+    let mut out = Vec::new();
+    let (_, v) = run(&["--version"], "yt-dlp");
+    out.push(format!("yt-dlp: {}", last_line(&v)));
+    let (_, enc) = run(&["-hide_banner", "-encoders"], "ffmpeg");
+    let (_, flt) = run(&["-hide_banner", "-filters"], "ffmpeg");
+    let has = |text: &str, name: &str| text.split_whitespace().any(|w| w == name);
+    for name in ["libx264", "h264_mediacodec", "aac", "libmp3lame", "libopus", "prores_ks"] {
+        out.push(format!("ffmpeg кодек {name}: {}", if has(&enc, name) { "есть" } else { "НЕТ" }));
+    }
+    for name in ["zscale", "tonemap", "scale", "fps"] {
+        out.push(format!("ffmpeg фильтр {name}: {}", if has(&flt, name) { "есть" } else { "НЕТ" }));
+    }
+    for js in [true, false] {
+        let label = if js { "с QuickJS" } else { "без JS-движка" };
+        match formats(&url, js) {
+            Ok((n, h, hd)) => out.push(format!(
+                "форматы YouTube {label}: {n}, лучшая высота {h}p, VP9/AV1 1080p+: {}",
+                if hd { "есть" } else { "нет" }
+            )),
+            Err(e) => out.push(format!("форматы YouTube {label}: ошибка — {e}")),
+        }
+    }
+    out.push(format!("свободно в папке загрузок: {:.1} ГБ", vgd_core::downloader::free_gb(&Settings::load().out_dir).unwrap_or(-1.0)));
+    out
+}
+
 // ---------- VK ----------
 
 /// Трек VK из скрытого WebView.
@@ -485,6 +554,17 @@ pub fn is_music_url(url: String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Проверка на ПК с настоящими yt-dlp/ffmpeg в PATH: `cargo test -p vgd-android -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_diagnose() {
+        let lines = diagnose("https://www.youtube.com/watch?v=jNQXAC9IVRw".into());
+        for l in &lines {
+            println!("{l}");
+        }
+        assert!(lines.iter().any(|l| l.starts_with("форматы YouTube с QuickJS")));
+    }
 
     #[test]
     fn share_text_to_url() {

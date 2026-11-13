@@ -503,6 +503,30 @@ private fun SettingsPage(pad: PaddingValues, style: String, onStyle: (String) ->
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        Section("Проверка")
+        var checking by remember { mutableStateOf(false) }
+        Text(
+            "yt-dlp, кодеки и фильтры ffmpeg, форматы YouTube с QuickJS и без — результат в «Журнале».",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        FilledTonalButton(enabled = !checking, onClick = {
+            checking = true
+            scope.launch(Dispatchers.IO) {
+                Vgd.addLog("Проверка: Me at the zoo + 1080p-ролик…")
+                try {
+                    Vgd.core()
+                    for (url in listOf("https://www.youtube.com/watch?v=jNQXAC9IVRw", "https://www.youtube.com/watch?v=aqz-KE-bpKQ")) {
+                        Vgd.addLog("— $url")
+                        io.github.vivegass.vgd.core.diagnose(url).forEach { Vgd.addLog(it) }
+                    }
+                } catch (e: Throwable) {
+                    Vgd.addLog("Ошибка: проверка: ${e.message}")
+                }
+                checking = false
+            }
+        }) { Text(if (checking) "проверяю…" else "проверить") }
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
         Text(
             "Very Good Downloader ${io.github.vivegass.vgd.core.version()} · ${ctx.packageName}",
             style = MaterialTheme.typography.bodySmall,
