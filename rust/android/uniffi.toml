@@ -1,0 +1,4 @@
+# Kotlin-обёртка: пакет и имя библиотеки (libvgd.so)
+[bindings.kotlin]
+package_name = "io.github.vivegass.vgd.core"
+cdylib_name = "vgd"

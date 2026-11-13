@@ -33,6 +33,8 @@ pub struct Paths {
     pub env: Vec<(String, String)>,
     /// сколько ГБ оставлять свободными (по умолчанию `downloader::MIN_FREE_GB`)
     pub min_free_gb: Option<f64>,
+    /// папка загрузок по умолчанию (вместо `Видео\Very Good Downloader`)
+    pub default_out: Option<PathBuf>,
 }
 
 static PATHS: OnceLock<Paths> = OnceLock::new();
@@ -53,6 +55,11 @@ fn configured_tool(name: &str) -> Option<&'static Tool> {
 /// Инструмент задан в `init` (Android), а не найден рядом с программой.
 pub fn tool_configured(name: &str) -> bool {
     configured_tool(name).is_some()
+}
+
+/// Папка загрузок по умолчанию, заданная в `init` (Android: `Download/Very Good Downloader`).
+pub fn default_out() -> Option<PathBuf> {
+    paths().and_then(|p| p.default_out.clone())
 }
 
 /// Свободного места не меньше, ГБ (задано в `init`).

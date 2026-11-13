@@ -1,0 +1,13 @@
+# Генератор Kotlin-обёртки для libvgd.so (запускается на ПК при сборке APK, в программу не входит).
+[package]
+name = "uniffi-bindgen"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+uniffi = { version = "0.32", features = ["cli"] }

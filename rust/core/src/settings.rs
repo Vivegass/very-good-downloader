@@ -18,6 +18,9 @@ pub fn edit_name(key: &str) -> &'static str {
 }
 
 pub fn default_out() -> String {
+    if let Some(d) = crate::appinfo::default_out() {
+        return d.to_string_lossy().into_owned();
+    }
     let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
     home.join("Videos").join("Very Good Downloader").to_string_lossy().into_owned()
 }
