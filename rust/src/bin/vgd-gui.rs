@@ -80,8 +80,15 @@ struct Lay {
     shadow: u8,
     density: f32,
     padding: f32,
-    /// 0 — скруглённые, 1 — прямоугольные, 2 — контур, 3 — плоские
+    /// 0 — скруглённые, 1 — прямоугольные, 2 — контур, 3 — плоские, 4 — тональные (Material 3)
     buttons: u8,
+    /// скругление кнопок / поля для ссылок в точках; < 0 — по radius
+    btn_r: f32,
+    field_r: f32,
+    /// выбранный пункт навигации — «таблетка» вокруг значка (Navigation Rail)
+    nav_pill: bool,
+    /// тумблеры в стиле Material 3
+    m3_switch: bool,
     bg: [Color32; 3],
     bg_n: usize,
     image_opacity: f32,
@@ -111,7 +118,11 @@ impl Lay {
             shadow: idx(&l.shadow, &["none", "shadow", "glow"]),
             density: l.density,
             padding: l.padding,
-            buttons: idx(&l.buttons, &["pill", "rect", "outline", "flat"]),
+            buttons: idx(&l.buttons, &["pill", "rect", "outline", "flat", "tonal"]),
+            btn_r: l.button_radius,
+            field_r: l.field_radius,
+            nav_pill: l.nav_indicator == "pill",
+            m3_switch: l.switch == "m3",
             bg,
             bg_n: l.background.len().min(3),
             image_opacity: l.image_opacity,
@@ -180,7 +191,19 @@ fn rad(r: u8) -> u8 {
 
 /// Скругление кнопок: у прямоугольных — почти без него.
 fn btn_rad(r: u8) -> u8 {
-    if pal().lay.buttons == 1 { rad(r).min(3) } else { rad(r) }
+    let lay = pal().lay;
+    if lay.btn_r >= 0.0 {
+        lay.btn_r.round().min(255.0) as u8
+    } else if lay.buttons == 1 {
+        rad(r).min(3)
+    } else {
+        rad(r)
+    }
+}
+
+/// Слой наведения (как state layer в Material 3): цвет чуть ближе к цвету текста.
+fn hover_of(c: Color32) -> Color32 {
+    c.lerp_to_gamma(pal().text, 0.08)
 }
 
 /// Отступ по горизонтали: множитель темы, при скруглении больше обычного — шире, чтобы текст не прилипал к углам.
@@ -1218,7 +1241,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                 egui::Frame::new()
                     .fill(pal().surface)
                     .stroke(Stroke::new(1.0, if has_focus { pal().muted } else { pal().border }))
-                    .corner_radius(rad(12))
+                    .corner_radius(if pal().lay.field_r >= 0.0 { pal().lay.field_r.round() as u8 } else { rad(12) })
                     .inner_margin(margin(12.0, 9.0))
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| {
@@ -1279,9 +1302,14 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                         let (r, resp) = ui.allocate_exact_size(Vec2::splat(dens(34.0)), Sense::click());
                         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("открыть папку загрузок");
                         let style = pal().lay.buttons;
-                        let fill = if resp.hovered() { pal().surface_hi } else if style == 2 { Color32::TRANSPARENT } else { pal().surface };
+                        let fill = match style {
+                            4 => if resp.hovered() { hover_of(pal().pill) } else { pal().pill },
+                            _ if resp.hovered() => pal().surface_hi,
+                            2 => Color32::TRANSPARENT,
+                            _ => pal().surface,
+                        };
                         ui.painter().rect_filled(r, btn_rad(11), fill);
-                        if style != 3 {
+                        if style != 3 && style != 4 {
                             ui.painter().rect_stroke(r, btn_rad(11), Stroke::new(1.0, pal().border), StrokeKind::Inside);
                         }
                         paint_folder(ui.painter(), r.center(), pal().text);
@@ -2615,7 +2643,13 @@ fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, value: &mut T, opts: &[(T,
     let font = FontId::monospace(13.0);
     let total: f32 = opts.iter().map(|(_, l)| (text_size(ui, l, &font).x + 24.0 * pal().lay.padding).max(48.0) + 2.0).sum::<f32>() + 6.0;
     let width = total.min(ui.available_width());
-    egui::Frame::new().fill(pal().surface).corner_radius(btn_rad(11)).inner_margin(3).show(ui, |ui| {
+    let tonal = pal().lay.buttons == 4;
+    let frame = if tonal {
+        egui::Frame::new().stroke(Stroke::new(1.0, pal().border))
+    } else {
+        egui::Frame::new().fill(pal().surface)
+    };
+    frame.corner_radius(btn_rad(11)).inner_margin(3).show(ui, |ui| {
         ui.set_max_width(width - 6.0);
         ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
         ui.horizontal_wrapped(|ui| {
@@ -2626,7 +2660,9 @@ fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, value: &mut T, opts: &[(T,
                 let size = text_size(ui, label, &font) + Vec2::new(24.0 * pal().lay.padding, 0.0);
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(size.x.max(48.0), dens(30.0)), Sense::click());
                 let selected = v == value;
-                let fill = if selected {
+                let fill = if selected && tonal {
+                    pal().pill
+                } else if selected {
                     pal().accent
                 } else if resp.hovered() {
                     pal().surface_hi
@@ -2639,7 +2675,7 @@ fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, value: &mut T, opts: &[(T,
                     Align2::CENTER_CENTER,
                     label,
                     font.clone(),
-                    if selected { pal().on_accent } else { pal().text },
+                    if selected && !tonal { pal().on_accent } else { pal().text },
                 );
                 let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                 if resp.clicked() && !selected {
@@ -2701,6 +2737,9 @@ fn row(ui: &mut egui::Ui, label: &str, tip: &str, add: impl FnOnce(&mut egui::Ui
 
 /// Переключатель-тумблер.
 fn toggle(ui: &mut egui::Ui, value: &mut bool) -> bool {
+    if pal().lay.m3_switch {
+        return toggle_m3(ui, value);
+    }
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(36.0, 20.0), Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let t = ui.ctx().animate_bool(resp.id, *value);
@@ -2708,6 +2747,28 @@ fn toggle(ui: &mut egui::Ui, value: &mut bool) -> bool {
     p.rect_filled(rect, rad(10), pal().toggle_off.lerp_to_gamma(pal().accent, t));
     let x = egui::lerp(rect.left() + 10.0..=rect.right() - 10.0, t);
     p.circle_filled(egui::pos2(x, rect.center().y), 7.0, pal().knob_off.lerp_to_gamma(pal().knob_on, t));
+    if resp.clicked() {
+        *value = !*value;
+        return true;
+    }
+    false
+}
+
+/// Тумблер в духе Material 3 Switch: выключен — рамка и маленький кружок, включён — залит акцентом, кружок больше.
+fn toggle_m3(ui: &mut egui::Ui, value: &mut bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(44.0, 26.0), Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let t = ui.ctx().animate_bool(resp.id, *value);
+    let c = pal();
+    let p = ui.painter();
+    let r = rect.height() / 2.0;
+    p.rect_filled(rect, r as u8, c.toggle_off.lerp_to_gamma(c.accent, t));
+    if t < 1.0 {
+        p.rect_stroke(rect, r as u8, Stroke::new(2.0, c.knob_off.gamma_multiply(1.0 - t)), StrokeKind::Inside);
+    }
+    let x = egui::lerp(rect.left() + r..=rect.right() - r, t);
+    let knob = egui::lerp(6.0..=9.5, t) + if resp.hovered() { 1.0 } else { 0.0 };
+    p.circle_filled(egui::pos2(x, rect.center().y), knob, c.knob_off.lerp_to_gamma(c.knob_on, t));
     if resp.clicked() {
         *value = !*value;
         return true;
@@ -2727,7 +2788,7 @@ fn small_pill_enabled(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Res
     let hovered = enabled && resp.hovered();
     let p = ui.painter();
     let style = pal().lay.buttons;
-    let fill = if hovered { pal().surface_hi } else if style == 2 { Color32::TRANSPARENT } else { pal().pill };
+    let fill = if hovered { pal().surface_hi } else if style == 2 || style == 4 { Color32::TRANSPARENT } else { pal().pill };
     p.rect_filled(rect, btn_rad(9), fill);
     if style != 3 {
         p.rect_stroke(rect, btn_rad(9), Stroke::new(1.0, pal().border), StrokeKind::Inside);
@@ -2760,11 +2821,12 @@ fn pill(ui: &mut egui::Ui, icon: Option<char>, text: &str, primary: bool, enable
         (true, true) if style == 2 => (if hovered { c.accent.gamma_multiply(0.18) } else { Color32::TRANSPARENT }, c.accent),
         (true, true) => (if hovered { c.accent_hover } else { c.accent }, c.on_accent),
         (false, true) if style == 2 => (if hovered { c.surface_hi } else { Color32::TRANSPARENT }, c.text),
+        (false, true) if style == 4 => (if hovered { hover_of(c.pill) } else { c.pill }, c.text),
         (false, true) => (if hovered { c.surface_hi } else { c.surface }, c.text),
         (_, false) => (if style == 2 { Color32::TRANSPARENT } else { c.surface }, c.faint),
     };
     let stroke = match (style, primary, enabled) {
-        (3, _, _) => Stroke::NONE,
+        (3, _, _) | (4, _, true) => Stroke::NONE,
         (2, true, true) => Stroke::new(1.5, if hovered { c.accent_hover } else { c.accent }),
         (2, _, _) => Stroke::new(1.0, c.border),
         (_, true, _) => Stroke::NONE,
@@ -2828,7 +2890,15 @@ fn nav_item(ui: &mut egui::Ui, icon: char, label: &str, selected: bool, badge: O
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(62.0, 52.0), Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let p = ui.painter();
-    if selected {
+    if pal().lay.nav_pill {
+        // Navigation Rail: «таблетка» вокруг значка, подпись под ней
+        let ind = egui::Rect::from_center_size(rect.center_top() + Vec2::new(0.0, 18.0), Vec2::new(54.0, 30.0));
+        if selected {
+            p.rect_filled(ind, 15, pal().pill);
+        } else if resp.hovered() {
+            p.rect_filled(ind, 15, pal().surface_hi);
+        }
+    } else if selected {
         p.rect_filled(rect, rad(10), pal().surface_hi);
     } else if resp.hovered() {
         p.rect_filled(rect, rad(10), pal().surface);
@@ -3270,7 +3340,11 @@ fn setup_fonts(ctx: &egui::Context, t: &Theme) {
     };
     // Моноширинный шрифт для всего интерфейса: Cascadia Mono (Windows 11 / Terminal), иначе Consolas.
     // В теме со шрифтом «sans» — Segoe UI.
-    let files: &[&str] = if t.font == "sans" { &["segoeui.ttf", "CascadiaMono.ttf", "consola.ttf"] } else { &["CascadiaMono.ttf", "consola.ttf"] };
+    let files: &[&str] = match t.font.as_str() {
+        "sans" => &["segoeui.ttf", "CascadiaMono.ttf", "consola.ttf"],
+        "roboto" => &["Roboto-Regular.ttf", "segoeui.ttf", "CascadiaMono.ttf", "consola.ttf"],
+        _ => &["CascadiaMono.ttf", "consola.ttf"],
+    };
     let mono = files.iter().find_map(|f| std::fs::read(dir.join(f)).ok().map(|b| (*f, b)));
     if let Some((_, bytes)) = &mono {
         fonts.font_data.insert("mono".into(), data(bytes.clone(), scale));
@@ -3282,7 +3356,12 @@ fn setup_fonts(ctx: &egui::Context, t: &Theme) {
     let mut bold_fam = Vec::new();
     if t.layout.bold_headings {
         let b = match &mono {
-            Some(("segoeui.ttf", _)) => std::fs::read(dir.join("segoeuib.ttf")).ok().map(|b| data(b, scale)),
+            // у Roboto заголовки — Medium (как title в шкале Material 3), у Segoe UI — Semibold/Bold
+            Some(("Roboto-Regular.ttf", _)) => std::fs::read(dir.join("Roboto-Medium.ttf")).ok().map(|b| data(b, scale)),
+            Some(("segoeui.ttf", _)) => {
+                let f = if t.font == "roboto" { "seguisb.ttf" } else { "segoeuib.ttf" };
+                std::fs::read(dir.join(f)).ok().map(|b| data(b, scale))
+            }
             Some(("CascadiaMono.ttf", bytes)) => Some(Arc::new(FontData::from_owned(bytes.clone()).tweak(
                 egui::epaint::text::FontTweak {
                     scale,

@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use crate::appinfo::data_dir;
 
+pub mod m3;
+use m3::M3;
+
 /// Цвет «#rrggbb».
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub [u8; 3]);
@@ -50,7 +53,7 @@ impl<'de> Deserialize<'de> for Rgb {
 }
 
 /// Шрифт интерфейса.
-pub const FONTS: &[(&str, &str)] = &[("mono", "моноширинный"), ("sans", "обычный (segoe ui)")];
+pub const FONTS: &[(&str, &str)] = &[("mono", "моноширинный"), ("sans", "segoe ui"), ("roboto", "roboto")];
 /// Набор значков.
 pub const ICON_SETS: &[(&str, &str)] = &[("line", "тонкие"), ("symbols", "символы")];
 
@@ -76,8 +79,17 @@ pub struct Layout {
     pub density: f32,
     /// внутренние отступы (ещё растут вместе со скруглением)
     pub padding: f32,
-    /// кнопки: "pill" — скруглённые, "rect" — прямоугольные, "outline" — контур, "flat" — плоские
+    /// кнопки: "pill" — скруглённые, "rect" — прямоугольные, "outline" — контур, "flat" — плоские,
+    /// "tonal" — как в Material 3: главная залита акцентом, обычные — тональные (цвет pill), маленькие — контурные
     pub buttons: String,
+    /// скругление кнопок в точках (100 — «таблетка» целиком); -1 — по radius темы
+    pub button_radius: f32,
+    /// скругление поля для ссылок в точках; -1 — по radius темы
+    pub field_radius: f32,
+    /// выбранный пункт навигации: "block" — подсветка всего пункта, "pill" — «таблетка» вокруг значка (Navigation Rail)
+    pub nav_indicator: String,
+    /// тумблеры: "classic" — как в тёмной, "m3" — крупные, с рамкой в выключенном виде (Material 3 Switch)
+    pub switch: String,
     /// фон окна — градиент сверху вниз из 2–3 цветов (пусто — сплошной цвет bg)
     pub background: Vec<Rgb>,
     /// картинка PNG из папки тем поверх фона ("" — без картинки)
@@ -105,6 +117,10 @@ impl Default for Layout {
             density: 1.0,
             padding: 1.0,
             buttons: "pill".into(),
+            button_radius: -1.0,
+            field_radius: -1.0,
+            nav_indicator: "block".into(),
+            switch: "classic".into(),
             background: Vec::new(),
             background_image: String::new(),
             image_opacity: 0.25,
@@ -131,7 +147,11 @@ impl Layout {
         one_of(&mut self.header, &["logo", "name", "none"]);
         one_of(&mut self.cards, &["fill", "outline", "none"]);
         one_of(&mut self.shadow, &["none", "shadow", "glow"]);
-        one_of(&mut self.buttons, &["pill", "rect", "outline", "flat"]);
+        one_of(&mut self.buttons, &["pill", "rect", "outline", "flat", "tonal"]);
+        one_of(&mut self.nav_indicator, &["block", "pill"]);
+        one_of(&mut self.switch, &["classic", "m3"]);
+        clamp(&mut self.button_radius, -1.0, 100.0, -1.0);
+        clamp(&mut self.field_radius, -1.0, 100.0, -1.0);
         one_of(&mut self.caps, &["lower", "upper"]);
         clamp(&mut self.nav_width, 60.0, 260.0, 76.0);
         clamp(&mut self.column, 420.0, 1200.0, 640.0);
@@ -153,7 +173,7 @@ pub struct Theme {
     pub name: String,
     /// множитель скругления углов: 0 — квадратные, 1 — как в тёмной, 2 — вдвое круглее
     pub radius: f32,
-    /// "mono" / "sans"
+    /// "mono" / "sans" (Segoe UI) / "roboto" (Roboto, если установлен, иначе Segoe UI)
     pub font: String,
     /// "line" (Segoe MDL2) / "symbols" (обычные символы ↓ ⚙ ☰)
     pub icons: String,
@@ -187,6 +207,9 @@ pub struct Theme {
     pub warn_bg: Rgb,
     /// раскладка и форма (только в файле)
     pub layout: Layout,
+    /// Material 3: seed и роли схемы (для Android — ColorScheme); у тем не на M3 — нет
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub m3: Option<M3>,
 }
 
 impl Default for Theme {
@@ -289,6 +312,7 @@ pub fn dark() -> Theme {
         err: Rgb::hex(0xf06e6e),
         warn: Rgb::hex(0xe8b44c),
         warn_bg: Rgb::hex(0x1d180c),
+        m3: None,
         layout: Layout::default(),
     }
 }
@@ -328,6 +352,7 @@ pub fn light() -> Theme {
         err: Rgb::hex(0xd0433f),
         warn: Rgb::hex(0xa86d12),
         warn_bg: Rgb::hex(0xfbf0da),
+        m3: None,
         layout: Layout::default(),
     }
 }
@@ -367,6 +392,7 @@ pub fn sunset() -> Theme {
         err: Rgb::hex(0xff6b8a),
         warn: Rgb::hex(0xffc861),
         warn_bg: Rgb::hex(0x2e2020),
+        m3: None,
         layout: Layout::default(),
     }
 }
@@ -406,6 +432,7 @@ pub fn terminal() -> Theme {
         err: Rgb::hex(0xff5f56),
         warn: Rgb::hex(0xffd75f),
         warn_bg: Rgb::hex(0x1c1a08),
+        m3: None,
         layout: Layout::default(),
     }
 }
@@ -445,6 +472,7 @@ pub fn neon() -> Theme {
         err: Rgb::hex(0xff4f7b),
         warn: Rgb::hex(0xffd23d),
         warn_bg: Rgb::hex(0x231a14),
+        m3: None,
         layout: Layout {
             nav: "top".into(),
             header: "name".into(),
@@ -495,6 +523,7 @@ pub fn cloud() -> Theme {
         err: Rgb::hex(0xd23f5e),
         warn: Rgb::hex(0x9a6a00),
         warn_bg: Rgb::hex(0xfbf1d9),
+        m3: None,
         layout: Layout {
             nav: "bottom".into(),
             nav_labels: false,
@@ -544,6 +573,7 @@ pub fn paper() -> Theme {
         err: Rgb::hex(0xc0261a),
         warn: Rgb::hex(0x8a5a00),
         warn_bg: Rgb::hex(0xf5e7c4),
+        m3: None,
         layout: Layout {
             nav_width: 190.0,
             header: "name".into(),
@@ -559,6 +589,69 @@ pub fn paper() -> Theme {
     }
 }
 
+/// Тема Material 3 из схемы: роли M3 → цвета окна, форма — по шкале M3.
+/// Соответствие полей ролям — в README (раздел «Material 3»).
+pub fn from_m3(name: &str, m: &M3) -> Theme {
+    let s = m.roles();
+    let dark = m.dark;
+    let tone = |p: m3::Palette, light: f64, dark_t: f64| p.tone(if dark { dark_t } else { light });
+    let (ok, warn) = (m3::success(), m3::warning());
+    Theme {
+        name: name.into(),
+        radius: 1.0,
+        font: "roboto".into(),
+        icons: "line".into(),
+        bg: s.surface,
+        sidebar: s.surface,
+        sidebar_line: s.surface,
+        surface: s.surface_container,
+        surface_hi: s.surface_container_highest,
+        pill: s.secondary_container,
+        border: s.outline,
+        divider: s.outline_variant,
+        outline: s.outline_variant,
+        window: s.surface_container_high,
+        field: s.surface_container_highest,
+        selection: s.primary_container,
+        text: s.on_surface,
+        text_hover: s.on_surface,
+        muted: s.on_surface_variant,
+        faint: s.outline,
+        accent: s.primary,
+        accent_hover: m3::blend(s.primary, s.on_primary, 0.08),
+        on_accent: s.on_primary,
+        toggle_off: s.surface_container_highest,
+        knob_off: s.outline,
+        knob_on: s.on_primary,
+        track: s.secondary_container,
+        ok: tone(ok, 40.0, 80.0),
+        ok_bg: tone(ok, 90.0, 30.0),
+        err: s.error,
+        warn: tone(warn, 40.0, 80.0),
+        warn_bg: tone(warn, 90.0, 30.0),
+        layout: Layout {
+            nav_width: 80.0,
+            nav_indicator: "pill".into(),
+            buttons: "tonal".into(),
+            button_radius: 100.0,
+            field_radius: 4.0,
+            switch: "m3".into(),
+            density: 1.1,
+            padding: 1.15,
+            font_scale: 1.05,
+            bold_headings: true,
+            ..Layout::default()
+        },
+        m3: Some(M3 { seed: m.seed, dark, scheme: Some(s) }),
+    }
+}
+
+/// Material 3 из базового seed (#6750a4), тёмная и светлая.
+pub fn material(dark: bool) -> Theme {
+    let m = M3 { seed: m3::BASELINE_SEED, dark, scheme: None };
+    from_m3(if dark { "material 3" } else { "material 3 светлая" }, &m)
+}
+
 /// Встроенные темы: ключ в настройках ("" — тёмная) и сама тема.
 pub fn builtins() -> Vec<(&'static str, Theme)> {
     vec![
@@ -569,6 +662,8 @@ pub fn builtins() -> Vec<(&'static str, Theme)> {
         ("neon", neon()),
         ("cloud", cloud()),
         ("paper", paper()),
+        ("material", material(true)),
+        ("material-light", material(false)),
     ]
 }
 
@@ -644,12 +739,39 @@ pub fn read_from(path: &Path) -> Result<Theme, String> {
     let bad = |e: serde_json::Error| format!("{} — не тема: {e}", path.display());
     let v: serde_json::Value = serde_json::from_str(&strip_comments(text.trim_start_matches('\u{feff}'))).map_err(bad)?;
     let named = v.get("name").and_then(|n| n.as_str()).is_some_and(|s| !s.trim().is_empty());
+    // Тема на Material 3: всё, что не задано в файле, — из ролей схемы (seed → роли → цвета окна).
+    let v = match v.get("m3") {
+        Some(m) if v.is_object() => {
+            let m: M3 = serde_json::from_value(m.clone()).map_err(bad)?;
+            let mut base = serde_json::to_value(from_m3("", &m)).map_err(bad)?;
+            merge(&mut base, v);
+            base
+        }
+        _ => v,
+    };
     let mut t: Theme = serde_json::from_value(v).map_err(bad)?;
     if !named {
         t.name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     }
     t.sanitize();
     Ok(t)
+}
+
+/// Наложить значения из файла поверх готовых (вложенные объекты — по полям).
+fn merge(base: &mut serde_json::Value, over: serde_json::Value) {
+    match (base, over) {
+        (serde_json::Value::Object(b), serde_json::Value::Object(o)) => {
+            for (k, v) in o {
+                match b.get_mut(&k) {
+                    Some(slot) => merge(slot, v),
+                    None => {
+                        b.insert(k, v);
+                    }
+                }
+            }
+        }
+        (b, o) => *b = o,
+    }
 }
 
 /// Записать тему в файл (папка создаётся).
@@ -782,6 +904,48 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&j).unwrap();
         assert_eq!(v["a"], "http://x");
         assert_eq!(v["b"], "q\"//");
+    }
+
+    #[test]
+    fn m3_from_seed_file() {
+        // В файле только seed — роли и цвета окна выводятся, явно заданное в файле остаётся.
+        let dir = std::env::temp_dir().join(format!("vgd-theme-m3-{}", std::process::id()));
+        let path = dir.join("m.json");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(&path, r##"{"name": "синяя", "m3": {"seed": "#00639b", "dark": false}, "text": "#101010"}"##).unwrap();
+        let t = read_from(&path).unwrap();
+        let roles = t.m3.as_ref().and_then(|m| m.scheme.clone()).expect("роли выведены");
+        assert_eq!(t.bg, roles.surface);
+        assert_eq!(t.accent, roles.primary);
+        assert_eq!(t.text, Rgb::hex(0x101010));
+        assert_eq!(t.layout.buttons, "tonal");
+        assert!(t.is_light());
+        // записали и прочитали — то же самое (роли сохраняются в файл для Android)
+        write_to(&path, &t).unwrap();
+        assert_eq!(read_from(&path).unwrap(), t);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn m3_baseline_close_to_spec() {
+        // Базовая схема M3 (Material Theme Builder, seed #6750a4): primary тёмной — #d0bcff, светлой — #6750a4.
+        let near = |a: Rgb, b: u32| {
+            let b = Rgb::hex(b);
+            let d = (0..3).map(|i| (a.0[i] as i32 - b.0[i] as i32).abs()).max().unwrap();
+            assert!(d <= 28, "{} vs {}", a.to_hex(), b.to_hex());
+        };
+        let d = m3::Scheme::from_seed(m3::BASELINE_SEED, true);
+        near(d.primary, 0xd0bcff);
+        near(d.on_primary, 0x381e72);
+        near(d.surface, 0x141218);
+        near(d.on_surface, 0xe6e0e9);
+        near(d.outline, 0x938f99);
+        near(d.error, 0xf2b8b5);
+        let l = m3::Scheme::from_seed(m3::BASELINE_SEED, false);
+        near(l.primary, 0x6750a4);
+        near(l.surface, 0xfef7ff);
+        near(l.secondary_container, 0xe8def8);
+        near(l.outline, 0x79747e);
     }
 
     #[test]

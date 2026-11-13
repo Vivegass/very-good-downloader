@@ -233,3 +233,31 @@ Inno Setup 6, делает `release\VeryGoodDownloader-Setup-<версия>.exe`
   шрифты и картинка фона пересобираются, только если сменились.
 - Настройки → «оформление» (`bin/gui/appearance.rs`): выбор темы, «создать» (копия текущей), пример кнопок,
   пипетка для каждого цвета, ползунок скругления, шрифт и значки, «сохранить» название, удалить, папка тем, импорт/экспорт.
+
+### Material 3 (и перенос на Android)
+
+- Встроенные «material 3» и «material 3 светлая» (`material`, `material-light`) собраны из seed `#6750a4` функцией
+  `theme::from_m3`. Форма задаётся общими параметрами `layout`: `buttons: "tonal"` (главная — filled, обычные — tonal,
+  маленькие — outlined), `button_radius: 100` (full), `field_radius: 4` (ExtraSmall), карточки — скругление 12 (Medium),
+  `nav_indicator: "pill"` (Navigation Rail: «таблетка» вокруг значка, подпись под ней), `nav_width: 80`, `switch: "m3"`,
+  `font: "roboto"` (Roboto Regular, заголовки — Medium; без Roboto — Segoe UI / Semibold).
+- Своя тема на M3 — достаточно `{"name": "…", "m3": {"seed": "#00639b", "dark": false}}`: роли выводятся из seed
+  (`theme/m3.rs`, «tonal spot»: primary — оттенок seed, secondary — C16, tertiary — оттенок +60° C24, neutral C4,
+  neutral variant C8, error — от #b3261e; тона ролей — по спецификации M3). Тон — L* (как в HCT), оттенок и насыщенность —
+  CIELAB LCh вместо CAM16, поэтому цвета близки к Material Theme Builder, но не точь-в-точь (тест: базовая схема в пределах
+  ±28 по каналу). Всё, что задано в файле явно, остаётся как задано.
+- При сохранении в файле появляется `m3.scheme` — все роли с именами полей Compose `ColorScheme` (camelCase:
+  `primary`, `onPrimary`, `primaryContainer`, `surfaceContainerLow`…). Android читает `m3.scheme` и строит
+  `ColorScheme(...)` / `darkColorScheme(...)` напрямую, без своего пересчёта; `m3.dark` — какая из двух.
+- Соответствие полей окна ролям M3 (`from_m3`):
+
+  | поле темы | роль M3 | поле темы | роль M3 |
+  |---|---|---|---|
+  | `bg`, `sidebar`, `sidebar_line` | `surface` | `text`, `text_hover` | `onSurface` |
+  | `surface` (карточки) | `surfaceContainer` | `muted` | `onSurfaceVariant` |
+  | `surface_hi`, `field` | `surfaceContainerHighest` | `faint`, `border`, `knob_off` | `outline` |
+  | `window` | `surfaceContainerHigh` | `divider`, `outline` | `outlineVariant` |
+  | `pill` (tonal-кнопки, индикатор навигации), `track` | `secondaryContainer` | `selection` | `primaryContainer` |
+  | `accent` | `primary` | `on_accent`, `knob_on` | `onPrimary` |
+  | `accent_hover` | `primary` + 8% `onPrimary` (state layer) | `toggle_off` | `surfaceContainerHighest` |
+  | `err` | `error` | `ok`/`ok_bg`, `warn`/`warn_bg` | доп. цвета (как custom colors): зелёный #386a20 и янтарный #7c5800, тон 40/90 (светлая) или 80/30 (тёмная) |
