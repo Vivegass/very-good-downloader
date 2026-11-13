@@ -539,6 +539,13 @@ impl Downloader {
             tmpl
         };
 
+        // id видео — в тег «комментарий» файла (yt-dlp пишет поля meta_* при --embed-metadata):
+        // по нему «разложить папку» узнаёт видео, раз в имени файла id больше нет.
+        let vid = str_of(&info, &["id"]);
+        if !vid.is_empty() {
+            info["meta_comment"] = Value::String(crate::media::id_comment(&vid, &str_of(&info, &["webpage_url", "original_url"])));
+        }
+
         let parts = self.out().join(".parts");
         crate::appinfo::hidden_dir(&parts);
         let json_path = parts.join(format!("{}.vgd.info.json", if e.id.is_empty() { "video" } else { &e.id }));
@@ -546,7 +553,9 @@ impl Downloader {
             .map_err(|err| DlError::Failed(format!("Не удалось записать временный файл: {err}")))?;
         let result = self.download(&json_path, &tmpl, &info);
         let path = match result {
-            Ok(p) => p,
+            // Скачивается под именем с [id] (оно уникально — докачка и повтор не путают видео),
+            // а готовый файл получает чистое имя: id остаётся в теге самого файла.
+            Ok(p) => strip_id_from_names(&p, &str_of(&info, &["id"])),
             Err(err) => {
                 let _ = std::fs::remove_file(&json_path);
                 return Err(err);
@@ -588,6 +597,7 @@ impl Downloader {
             "--progress-template".into(),
             "download:VGDP|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(info.vcodec)s|%(info.format_note)s|%(info.format_id)s".into(),
             "--print".into(), "after_move:VGDF|%(filepath)s".into(),
+            "--embed-metadata".into(),
         ];
         args.extend(self.format_args());
         if self.opts.audio_only {
@@ -598,7 +608,7 @@ impl Downloader {
                 "flac" => args.extend(["--audio-format", "flac"].map(String::from)),
                 _ => {}
             }
-            args.extend(["--embed-metadata".into(), "--embed-thumbnail".into()]);
+            args.push("--embed-thumbnail".into());
         }
         if self.opts.has_section() {
             // Точный рез по времени (ffmpeg перекодирует края фрагмента).
@@ -725,7 +735,7 @@ impl Downloader {
         } else if too_fast {
             // Формата с нужной частотой на YouTube не было — пересчитываем. Результат сразу
             // H.264 MP4 (открывается в AE), поэтому отдельная H.264-копия уже не нужна.
-            // Если MP4 уже есть (прошлый запуск прервался), перезаписываем — имя уникально по [id].
+            // Если MP4 уже есть (прошлый запуск прервался), перезаписываем — имя уже проверено на чужие файлы.
             let new = path.with_extension("mp4");
             // Pinterest, VK и др. отдают сразу MP4: ffmpeg не может писать в свой же входной файл —
             // сначала во временный, потом подменяем.
@@ -1472,7 +1482,54 @@ pub fn fetch_infos(
     Ok(out)
 }
 
-/// Ищет в корне папки файлы с [id] в имени и решает, куда их переложить (сначала план, потом перенос).
+/// «Название [id].mkv» → «Название.mkv» — вместе с обложкой и папкой глав рядом. Возвращает новый путь.
+/// Если имя занято другим видео (одинаковые названия) — «Название (2)»; если тем же видео,
+/// скачанным раньше, — оно заменяется.
+fn strip_id_from_names(path: &Path, id: &str) -> PathBuf {
+    let tag = format!(" [{id}]");
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().map(|s| s.to_string_lossy().into_owned())) else {
+        return path.to_path_buf();
+    };
+    let clean = stem.replacen(&tag, "", 1);
+    if id.is_empty() || clean == stem || clean.trim().is_empty() {
+        return path.to_path_buf();
+    }
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    let mut new = clean.clone();
+    let mut n = 1;
+    loop {
+        let taken: Vec<&String> = names.iter().filter(|x| crate::sort::same_stem(x, &new)).collect();
+        if taken.is_empty() || taken.iter().any(|x| crate::sort::is_media(x) && probe(&dir.join(x)).video_id.as_deref() == Some(id)) {
+            break;
+        }
+        n += 1;
+        new = format!("{clean} ({n})");
+    }
+    for name in names.iter().filter(|x| x.contains(&tag)) {
+        // Файлы самого видео получают новое имя целиком; папка глав (название в ней короче) — просто без [id].
+        let to = match name.strip_prefix(&stem) {
+            Some(rest) => format!("{new}{rest}"),
+            None => name.replacen(&tag, "", 1),
+        };
+        let dst = dir.join(&to);
+        if dst.is_dir() {
+            continue;
+        }
+        let _ = std::fs::remove_file(&dst);
+        let _ = std::fs::rename(dir.join(name), &dst);
+    }
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let moved = dir.join(format!("{new}{ext}"));
+    if moved.exists() {
+        moved
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Ищет в корне папки видео (id — в теге файла или в имени) и решает, куда их переложить (сначала план, потом перенос).
 pub fn plan_existing(
     root: &Path,
     log: &dyn Fn(String),

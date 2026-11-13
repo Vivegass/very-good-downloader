@@ -395,19 +395,56 @@ pub fn video_id_in_name(name: &str) -> Option<String> {
     None
 }
 
-/// Файлы с `[id]` в корне папки, сгруппированные по id (в порядке появления).
+/// Видео или звук — файл, в теге которого может быть id.
+pub fn is_media(name: &str) -> bool {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+    ["mkv", "mp4", "mov", "webm", "m4a", "opus", "mp3", "flac"].contains(&ext.as_str())
+}
+
+/// Файл относится к видео с таким именем (без расширения): само видео, обложка, субтитры, копия для монтажа.
+pub fn same_stem(name: &str, stem: &str) -> bool {
+    let (name, stem) = (name.to_lowercase(), stem.to_lowercase());
+    name.strip_prefix(&stem).is_some_and(|rest| rest.starts_with('.') || rest.starts_with("_edit."))
+}
+
+/// Скачанные видео в корне папки, сгруппированные по id (в порядке появления): id берётся из имени
+/// файла (`[id]`, старые загрузки) или из тега самого файла (новые — в имени id нет).
 pub fn group_root_files(root: &Path) -> Vec<(String, Vec<PathBuf>)> {
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
     if let Ok(rd) = std::fs::read_dir(root) {
         let mut entries: Vec<_> = rd.flatten().filter(|e| e.path().is_file()).collect();
         entries.sort_by_key(|e| e.file_name());
+        let mut plain: Vec<PathBuf> = Vec::new();
         for e in entries {
             if let Some(id) = video_id_in_name(&e.file_name().to_string_lossy()) {
                 if !groups.contains_key(&id) {
                     order.push(id.clone());
                 }
                 groups.entry(id).or_default().push(e.path());
+            } else {
+                plain.push(e.path());
+            }
+        }
+        // Без [id] в имени: id — в теге видео; обложка, субтитры и копия для монтажа идут за ним по имени.
+        let name_of = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut used = vec![false; plain.len()];
+        for i in 0..plain.len() {
+            let name = name_of(&plain[i]);
+            if used[i] || !is_media(&name) {
+                continue;
+            }
+            // «Разложить» спрашивает сведения у YouTube — берём только его id (11 знаков).
+            let Some(id) = crate::media::probe(&plain[i]).video_id.filter(|id| video_id_in_name(&format!("[{id}]")).is_some()) else { continue };
+            let stem = plain[i].file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            for k in 0..plain.len() {
+                if !used[k] && same_stem(&name_of(&plain[k]), &stem) {
+                    used[k] = true;
+                    if !groups.contains_key(&id) {
+                        order.push(id.clone());
+                    }
+                    groups.entry(id.clone()).or_default().push(plain[k].clone());
+                }
             }
         }
     }
@@ -489,5 +526,8 @@ mod tests {
         assert_eq!(video_id_in_name("ALKAREN [vnFS2RaAeGc].mkv").as_deref(), Some("vnFS2RaAeGc"));
         assert_eq!(video_id_in_name("[x] a [jNQXAC9IVRw]_edit.mp4").as_deref(), Some("jNQXAC9IVRw"));
         assert_eq!(video_id_in_name("no id.mkv"), None);
+        assert!(same_stem("Blue Lies.mkv", "Blue Lies") && same_stem("blue lies.ru.srt", "Blue Lies") && same_stem("Blue Lies_edit.mp4", "Blue Lies"));
+        assert!(!same_stem("Blue Lies (2).mkv", "Blue Lies") && !same_stem("Blue Lies 2.mkv", "Blue Lies"));
+        assert!(is_media("a.MKV") && !is_media("a.jpg"));
     }
 }

@@ -200,6 +200,9 @@ struct App {
     /// вход в Яндекс идёт: код и страница для ввода
     ya_code: Option<(String, String)>,
     log: Vec<String>,
+    /// журнал: строка поиска и «поставить в неё курсор» (Ctrl+F)
+    log_find: String,
+    log_find_focus: bool,
     status: String,
     sort_plan: Option<Vec<(PathBuf, PathBuf)>>,
     sort_root: PathBuf,
@@ -308,6 +311,8 @@ impl App {
             preset_new: String::new(),
             ya_code: None,
             log: Vec::new(),
+            log_find: String::new(),
+            log_find_focus: false,
             status: String::new(),
             sort_plan: None,
             sort_root: PathBuf::new(),
@@ -673,7 +678,7 @@ impl App {
         }
         self.side_task = true;
         self.sort_root = root.clone();
-        self.status = "ищу видео с [id] в имени и узнаю их каналы…".into();
+        self.status = "ищу скачанные видео и узнаю их каналы…".into();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -826,7 +831,7 @@ impl App {
                     self.side_task = false;
                     if plan.is_empty() {
                         self.status = "раскладывать нечего".into();
-                        info("Разложить", "В корне папки нет неразложенных видео с [id] в имени.");
+                        info("Разложить", "В корне папки нет неразложенных видео, скачанных программой.");
                     } else {
                         self.status = format!("найдено файлов для раскладки: {}", plan.len());
                         self.sort_plan = Some(plan);
@@ -1230,7 +1235,7 @@ impl App {
                         toggle(ui, &mut self.s.playlist);
                     });
                     divider(ui);
-                    row(ui, "категории и уже скачанное", "«категории» — папки, по которым раскладываются видео, и слова, по которым они выбираются. «разложить» — разложить уже скачанные файлы с [id] в имени: сначала покажет план.", |ui| {
+                    row(ui, "категории и уже скачанное", "«категории» — папки, по которым раскладываются видео, и слова, по которым они выбираются. «разложить» — разложить уже скачанные программой видео из корня папки: сначала покажет план.", |ui| {
                         if small_pill_enabled(ui, "разложить…", !self.side_task).clicked() {
                             self.sort_existing(&ctx);
                         }
@@ -1765,7 +1770,8 @@ impl App {
                 Some(v) => format!("подключено · v{v}"),
                 None => "не подключено".to_string(),
             };
-            row(ui, "кнопки ↓ на youtube, spotify, soundcloud, яндекс музыке и vk", "", |ui| {
+            // Подпись короткая: длинный список сайтов в узком окне наезжал на «подключено».
+            row(ui, "кнопки ↓ на сайтах", "youtube, tiktok, spotify, soundcloud, яндекс музыка, apple music и vk — кнопка ↓ появляется прямо на странице. на любом другом сайте — значок расширения или пункт в меню правой кнопки.", |ui| {
                 ui.label(RichText::new(status).size(12.0).color(if seen.is_some() { OK } else { MUTED }));
             });
             divider(ui);
@@ -1814,12 +1820,43 @@ impl App {
                     if small_pill_enabled(ui, "очистить", !self.log.is_empty()).clicked() {
                         self.log.clear();
                     }
+                    // С поиском копируется то, что найдено.
                     if small_pill_enabled(ui, "копировать", !self.log.is_empty()).clicked() {
-                        ui.ctx().copy_text(self.log.join("\n"));
+                        let q = self.log_find.trim().to_lowercase();
+                        let lines: Vec<&str> = self.log.iter().filter(|l| q.is_empty() || l.to_lowercase().contains(&q)).map(String::as_str).collect();
+                        ui.ctx().copy_text(lines.join("\n"));
                     }
                 });
             });
-            ui.add_space(10.0);
+            ui.add_space(8.0);
+            let query = self.log_find.trim().to_lowercase();
+            let found = if query.is_empty() { self.log.len() } else { self.log.iter().filter(|l| l.to_lowercase().contains(&query)).count() };
+            egui::Frame::new().fill(SURFACE).corner_radius(10).inner_margin(Margin::symmetric(12, 6)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if !self.log_find.is_empty() {
+                            if link(ui, "сбросить").clicked() {
+                                self.log_find.clear();
+                            }
+                            ui.label(RichText::new(format!("найдено: {found}")).size(12.0).color(if found > 0 { MUTED } else { WARN }));
+                        }
+                        let field = ui.add(
+                            egui::TextEdit::singleline(&mut self.log_find)
+                                .frame(egui::Frame::NONE)
+                                .desired_width(ui.available_width())
+                                .hint_text(RichText::new("поиск в журнале — ctrl+f").color(FAINT)),
+                        );
+                        if std::mem::take(&mut self.log_find_focus) {
+                            field.request_focus();
+                        }
+                        // Esc в поле поиска — сбросить его.
+                        if field.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            self.log_find.clear();
+                        }
+                    });
+                });
+            });
+            ui.add_space(8.0);
             egui::Frame::new().fill(SURFACE).corner_radius(12).inner_margin(12).show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
                 egui::ScrollArea::vertical()
@@ -1830,8 +1867,10 @@ impl App {
                         ui.set_width(ui.available_width());
                         if self.log.is_empty() {
                             ui.label(RichText::new("пока пусто").color(FAINT));
+                        } else if found == 0 {
+                            ui.label(RichText::new("ничего не найдено").color(FAINT));
                         }
-                        for l in &self.log {
+                        for l in self.log.iter().filter(|l| query.is_empty() || l.to_lowercase().contains(&query)) {
                             let color = if l.starts_with("Ошибка") {
                                 ERR
                             } else if l.starts_with("Внимание") || l.starts_with("Предупреждение") {
@@ -2150,6 +2189,11 @@ impl eframe::App for App {
         }
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter)) {
             self.add_and_start(&ctx);
+        }
+        // Ctrl+F с любой страницы — журнал с курсором в поиске.
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
+            self.page = Page::Log;
+            self.log_find_focus = true;
         }
 
         egui::Panel::left("nav")

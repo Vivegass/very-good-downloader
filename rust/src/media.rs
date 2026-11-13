@@ -11,6 +11,18 @@ pub struct MediaInfo {
     pub hdr: bool,
     pub has_audio: bool,
     pub has_video: bool,
+    /// id видео, записанный программой в тег «комментарий» (`[id] ссылка`) — вместо `[id]` в имени файла
+    pub video_id: Option<String>,
+}
+
+/// Значение тега «комментарий», по которому программа узнаёт своё видео.
+pub fn id_comment(id: &str, url: &str) -> String {
+    format!("[{id}] {url}").trim().to_string()
+}
+
+fn id_in_comment(value: &str) -> Option<String> {
+    let id = value.trim().strip_prefix('[')?.split_once(']')?.0;
+    (!id.is_empty() && !id.contains(char::is_whitespace)).then(|| id.to_string())
 }
 
 /// Разбирает вывод `ffmpeg -i файл` (он пишет сведения в stderr и завершается с ошибкой — это нормально).
@@ -41,6 +53,13 @@ pub fn parse_probe(text: &str) -> MediaInfo {
             }
         } else if l.starts_with("Stream #") && l.contains(": Audio:") {
             m.has_audio = true;
+        } else if m.video_id.is_none() {
+            // «    COMMENT         : [jNQXAC9IVRw] https://…» (в MKV ключ заглавными, в MP4 — строчными)
+            if let Some((k, v)) = l.split_once(':') {
+                if k.trim().eq_ignore_ascii_case("comment") {
+                    m.video_id = id_in_comment(v);
+                }
+            }
         }
     }
     m
@@ -101,5 +120,14 @@ mod tests {
         assert!((m.duration - 36.04).abs() < 1e-6);
         assert!((m.fps - 47.95).abs() < 1e-6);
         assert!(m.hdr && m.has_audio && m.has_video);
+        assert_eq!(m.video_id, None);
+    }
+
+    #[test]
+    fn id_from_comment() {
+        let t = "Input #0, matroska,webm, from 'a.mkv':\n  Metadata:\n    title           : Me at the zoo\n    COMMENT         : [jNQXAC9IVRw] https://www.youtube.com/watch?v=jNQXAC9IVRw\n  Duration: 00:00:19.00, start: 0.000000, bitrate: 300 kb/s\n";
+        assert_eq!(parse_probe(t).video_id.as_deref(), Some("jNQXAC9IVRw"));
+        assert_eq!(parse_probe("    comment         : просто описание [не id]\n").video_id, None);
+        assert_eq!(id_comment("abc", "https://x/abc"), "[abc] https://x/abc");
     }
 }

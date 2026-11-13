@@ -265,11 +265,23 @@ pub fn install(restart: bool, log: &dyn Fn(String)) -> Result<(), String> {
 /// Тихая проверка: кнопки пропали (Spotify обновился) и Spotify закрыт — вернуть их.
 /// Открытый Spotify не трогаем: вернём при следующей проверке.
 pub fn repair(log: &dyn Fn(String)) -> Option<Result<(), String>> {
-    if status() != Status::Off || spotify_running() {
+    let outdated = match status() {
+        Status::Off => false,
+        Status::On if extension_outdated() => true,
+        _ => return None,
+    };
+    if spotify_running() {
         return None;
     }
-    log("Spotify обновился — возвращаю кнопки «скачать»…".into());
+    log(if outdated { "Обновляю кнопки «скачать» в Spotify…".into() } else { "Spotify обновился — возвращаю кнопки «скачать»…".into() });
     Some(install(false, log))
+}
+
+/// В Spotify стоит `vgd.js` от другой версии программы (после обновления программы).
+fn extension_outdated() -> bool {
+    let Some(dir) = spotify_dir() else { return false };
+    let same = |a: &str, b: &str| a.replace('\r', "") == b.replace('\r', "");
+    std::fs::read_to_string(dir.join("Apps").join("xpui").join("extensions").join(EXT_NAME)).is_ok_and(|have| !same(&have, EXTENSION_JS))
 }
 
 /// Проверка при входе в Windows: `Very Good Downloader.exe --spotify-repair` (без окна).

@@ -376,7 +376,7 @@ fn sort_existing(root: &str, yes: bool, _cookies: Option<&str>) -> ExitCode {
         println!("  {}  ->  {rel}", src.file_name().unwrap_or_default().to_string_lossy());
     }
     if plan.is_empty() {
-        println!("В корне папки нет неразложенных видео с [id] в имени.");
+        println!("В корне папки нет неразложенных видео, скачанных программой.");
         return ExitCode::SUCCESS;
     }
     let go = yes || {

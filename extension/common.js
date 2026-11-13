@@ -3,7 +3,8 @@
 
 const VGD = (() => {
   const ARROW =
-    '<svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true" focusable="false">' +
+    // Размер 24 — запасной: если стили расширения пропали, значок не растянется на пол-экрана.
+    '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">' +
     '<path d="M12 4.5v10m0 0-4-4m4 4 4-4M5.5 19h13" fill="none" stroke="currentColor" stroke-width="2" ' +
     'stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -84,7 +85,16 @@ const VGD = (() => {
 
   /** Повторять fn раз в секунду: сайты — одностраничные приложения и перерисовывают разметку. */
   function every(fn) {
+    let timer = 0;
     const run = () => {
+      // Расширение обновили, перезагрузили или выключили, а вкладка осталась открытой: браузер снимает
+      // с неё наши стили, и кнопки остаются «голыми» (огромный значок). Убираем их и останавливаемся —
+      // после обновления страницы кнопки вернутся.
+      if (!alive()) {
+        clearInterval(timer);
+        cleanup();
+        return;
+      }
       try {
         fn();
       } catch (e) {
@@ -92,8 +102,22 @@ const VGD = (() => {
       }
     };
     run();
-    setInterval(run, 1000);
+    timer = setInterval(run, 1000);
   }
 
-  return { button, toast, sendUrl, sendTracks, toSeconds, every };
+  function alive() {
+    try {
+      return !!chrome.runtime.id;
+    } catch {
+      return false;
+    }
+  }
+
+  function cleanup() {
+    document
+      .querySelectorAll(".vgd-icon, .vgd-toast, .vgd-vk-menu, .vgd-vk-hb, .vgd-vk-native, .vgd-vk-head, .vgd-am-wrap")
+      .forEach((el) => el.remove());
+  }
+
+  return { button, toast, sendUrl, sendTracks, toSeconds, every, alive };
 })();

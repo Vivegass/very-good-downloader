@@ -74,5 +74,7 @@
   }
 
   VGD.every(place);
-  document.addEventListener("yt-navigate-finish", place);
+  document.addEventListener("yt-navigate-finish", () => {
+    if (VGD.alive()) place();
+  });
 })();

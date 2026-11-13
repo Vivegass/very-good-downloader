@@ -17,6 +17,11 @@
   width: 20px;
   height: 20px;
 }
+.vgd-glyph svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
 .vgd-icon.vgd-busy {
   opacity: 0.45;
   pointer-events: none;

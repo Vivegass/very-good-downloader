@@ -141,8 +141,42 @@ pub fn install_extension_files() -> Result<PathBuf, String> {
     Ok(dst)
 }
 
+/// Имя, под которым Windows показывает наши уведомления (иначе они подписаны «Windows PowerShell»).
+const TOAST_APP_ID: &str = "VeryGoodDownloader.App";
+
+/// Записать в HKCU название и значок для уведомлений. Без этой записи Windows не покажет тост с нашим именем.
+#[cfg(windows)]
+fn register_toast_app() -> bool {
+    static DONE: OnceLock<bool> = OnceLock::new();
+    *DONE.get_or_init(|| {
+        use winreg::enums::HKEY_CURRENT_USER;
+        let Ok((key, _)) = winreg::RegKey::predef(HKEY_CURRENT_USER).create_subkey(format!(r"Software\Classes\AppUserModelId\{TOAST_APP_ID}")) else {
+            return false;
+        };
+        if key.set_value("DisplayName", &APP_NAME).is_err() {
+            return false;
+        }
+        let icon = data_dir().join("app.png");
+        if !icon.is_file() {
+            let _ = std::fs::create_dir_all(data_dir());
+            let _ = std::fs::write(&icon, include_bytes!("../app.png"));
+        }
+        if icon.is_file() {
+            let _ = key.set_value("IconUri", &icon.display().to_string());
+        }
+        true
+    })
+}
+
+#[cfg(not(windows))]
+fn register_toast_app() -> bool {
+    false
+}
+
 /// Уведомление Windows («тост»). Щелчок по нему открывает папку `open`.
 pub fn toast(title: &str, text: &str, open: &Path) {
+    // Не удалось записать своё имя — показываем от имени PowerShell, как раньше: лучше так, чем никак.
+    let app_id = if register_toast_app() { TOAST_APP_ID } else { r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe" };
     let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
     let uri = format!("file:///{}", open.display().to_string().replace('\\', "/").replace(' ', "%20"));
     let xml = format!(
@@ -156,10 +190,11 @@ pub fn toast(title: &str, text: &str, open: &Path) {
         [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null; \
         $x = New-Object Windows.Data.Xml.Dom.XmlDocument; $x.LoadXml($env:VGD_TOAST); \
         $t = New-Object Windows.UI.Notifications.ToastNotification $x; \
-        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($t)";
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($env:VGD_TOAST_APP).Show($t)";
     let _ = command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script])
         .env("VGD_TOAST", xml)
+        .env("VGD_TOAST_APP", app_id)
         .spawn();
 }
 

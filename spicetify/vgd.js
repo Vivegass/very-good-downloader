@@ -8,6 +8,10 @@
 // браузера); если программа закрыта — запускаем её ссылкой vgd:// и ждём.
 
 (async function vgd() {
+  // Расширение может загрузиться дважды (поставлено и программой, и из Marketplace, или записано в
+  // настройках Spicetify два раза) — тогда кнопок и пунктов меню было бы по две.
+  if (window.__vgdLoaded) return;
+  window.__vgdLoaded = true;
   while (!window.Spicetify?.showNotification || !Spicetify.Platform || !Spicetify.ContextMenu || !Spicetify.URI) {
     await new Promise((r) => setTimeout(r, 300));
   }
