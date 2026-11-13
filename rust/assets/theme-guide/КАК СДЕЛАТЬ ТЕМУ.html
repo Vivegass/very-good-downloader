@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как сделать тему — Very Good Downloader</title>
+<style>
+  :root { --bg: #f6f6f4; --card: #fff; --text: #1a1a1a; --muted: #5c5c5c; --line: #e2e1dd; --code: #f0efec; --accent: #3b6cf0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0b0b0b; --card: #151515; --text: #e8e8e8; --muted: #9a9a9a; --line: #2a2a2a; --code: #1d1d1d; --accent: #8fb0ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 22px; margin: 48px 0 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+  h3 { font-size: 17px; margin: 0 0 6px; }
+  a { color: var(--accent); }
+  .lead { color: var(--muted); font-size: 16px; margin: 0 0 20px; }
+  nav.toc { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 20px; columns: 2; }
+  nav.toc a { display: block; text-decoration: none; padding: 2px 0; }
+  code, pre { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 10px; overflow-x: auto; margin: 8px 0; }
+  pre code { background: none; padding: 0; }
+  .note { background: var(--card); border-left: 4px solid var(--accent); padding: 10px 16px; border-radius: 8px; margin: 12px 0; }
+  .param { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin: 14px 0; }
+  .param p { margin: 6px 0; }
+  .figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-top: 10px; }
+  figure { margin: 0; }
+  figure img { width: 100%; height: auto; display: block; border-radius: 8px; border: 1px solid var(--line); }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .big img { max-width: 900px; }
+  table { border-collapse: collapse; width: 100%; background: var(--card); border-radius: 12px; overflow: hidden; }
+  td, th { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .sw { display: inline-block; width: 22px; height: 16px; border-radius: 4px; border: 1px solid #0003; vertical-align: middle; }
+  ol li, ul li { margin: 4px 0; }
+  .steps { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 700px) { .steps, nav.toc { grid-template-columns: 1fr; columns: 1; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Как сделать свою тему</h1>
+<p class="lead">Very Good Downloader · темы оформления: цвета, скругление, шрифт, значки и раскладка окна. Все картинки ниже — настоящие скриншоты программы.</p>
+
+<nav class="toc">
+  <a href="#start">1. С чего начать</a>
+  <a href="#file">2. Как устроен файл темы</a>
+  <a href="#colors">3. Цвета — где какой</a>
+  <a href="#params">4. Форма и раскладка — все параметры</a>
+  <a href="#recipes">5. Рецепты: от нуля до неузнаваемой темы</a>
+  <a href="#m3">6. Тема из одного цвета (Material 3)</a>
+  <a href="#share">7. Как поделиться темой</a>
+  <a href="#errors">8. Частые ошибки и как вернуть тёмную</a>
+</nav>
+
+<h2 id="start">1. С чего начать</h2>
+<ol>
+  <li>Откройте <b>настройки → оформление</b>. Выберите тему, на основе которой хотите сделать свою (например, «тёмная»).</li>
+  <li>Нажмите <b>«создать»</b>. Появится копия — своя тема, и она сразу выбрана. В папке тем появится её файл <code>.json</code>.</li>
+  <li>Цвета, скругление, шрифт и значки можно менять прямо в программе: щелчок по квадратику цвета открывает пипетку, всё видно сразу.</li>
+  <li>Раскладка и форма (навигация сверху или снизу, вид карточек и кнопок, фон-градиент, размер шрифта…) меняются только в файле темы.
+      Нажмите <b>«папка тем»</b> и откройте файл своей темы в Блокноте (правой кнопкой → «Открыть с помощью» → «Блокнот»).</li>
+  <li>Сохраните файл (Ctrl+S) — <b>окно обновится само примерно через секунду</b>, если эта тема выбрана. Перезапускать программу не нужно.</li>
+</ol>
+<div class="note">Папка тем: <code>%APPDATA%\VeryGoodDownloader\themes\</code> (вставьте эту строку в адресную строку Проводника).
+Одна тема — один файл <code>.json</code>. Новые файлы появляются в списке тем, когда вы его открываете.
+Там же лежит <code>_пример — все поля.json</code> — тема со всеми полями и пояснением к каждому, и эта инструкция.</div>
+
+<h2 id="file">2. Как устроен файл темы</h2>
+<p>Файл темы — текст в формате JSON: пары <code>"поле": значение</code> через запятую внутри фигурных скобок. Достаточно указать только то, что меняете — <b>всё остальное берётся из тёмной темы</b>. Самая маленькая тема:</p>
+<pre><code>{
+  "name": "моя",
+  "accent": "#ff8a5c"
+}</code></pre>
+<ul>
+  <li>Цвета — <code>"#rrggbb"</code> (можно коротко <code>"#f80"</code>). Подобрать цвет удобно пипеткой в программе, а код — в любом «color picker» в интернете.</li>
+  <li>Числа пишутся с точкой: <code>1.5</code>, а не <code>1,5</code>. Да/нет — <code>true</code> / <code>false</code> без кавычек.</li>
+  <li>Можно писать комментарии: <code>// до конца строки</code> и <code>/* … */</code>.</li>
+  <li>Между полями — запятая, после последнего поля запятой нет.</li>
+  <li>Параметры раскладки лежат внутри <code>"layout": { … }</code>.</li>
+</ul>
+<details><summary>Пример со всеми полями и пояснениями (этот же файл лежит в папке тем)</summary>
+<pre><code>// Пример темы Very Good Downloader — все поля с пояснениями.
+// Скопируйте файл под своим именем (например «моя.json») в эту же папку и меняйте.
+// Можно писать комментарии // и /* */. Поля, которых нет в файле, берутся из тёмной темы,
+// так что в своей теме достаточно указать только то, что меняете.
+// Цвета — &quot;#rrggbb&quot;. Выбрать тему: настройки → оформление → тема.
+{
+  &quot;name&quot;: &quot;пример (все поля)&quot;,      // название в списке тем
+
+  &quot;radius&quot;: 1.0,                    // скругление углов: 0 — квадратные, 1 — обычные, до 3 — совсем круглые
+  &quot;font&quot;: &quot;mono&quot;,                   // шрифт: &quot;mono&quot; — моноширинный, &quot;sans&quot; — Segoe UI, &quot;roboto&quot; — Roboto (нет — Segoe UI)
+  &quot;icons&quot;: &quot;line&quot;,                  // значки: &quot;line&quot; — тонкие значки Windows, &quot;symbols&quot; — обычные знаки ↓ ⚙ ☰
+
+  &quot;bg&quot;: &quot;#000000&quot;,                  // фон окна
+  &quot;sidebar&quot;: &quot;#0b0b0b&quot;,             // панель навигации
+  &quot;sidebar_line&quot;: &quot;#161616&quot;,        // край панели навигации
+  &quot;surface&quot;: &quot;#151515&quot;,             // карточки и кнопки
+  &quot;surface_hi&quot;: &quot;#222222&quot;,          // наведение, выбранный пункт
+  &quot;pill&quot;: &quot;#1b1b1b&quot;,                // маленькие кнопки
+  &quot;border&quot;: &quot;#2a2a2a&quot;,              // рамки
+  &quot;divider&quot;: &quot;#202020&quot;,             // разделители строк в карточках
+  &quot;outline&quot;: &quot;#1c1c1c&quot;,             // рамка пустой очереди
+  &quot;window&quot;: &quot;#101010&quot;,              // всплывающие окна
+  &quot;field&quot;: &quot;#0d0d0d&quot;,               // поля ввода
+  &quot;selection&quot;: &quot;#444444&quot;,           // выделение текста
+  &quot;text&quot;: &quot;#e8e8e8&quot;,                // текст
+  &quot;text_hover&quot;: &quot;#ffffff&quot;,          // текст при наведении
+  &quot;muted&quot;: &quot;#8c8c8c&quot;,               // приглушённый текст (подписи)
+  &quot;faint&quot;: &quot;#555555&quot;,               // бледный текст (подсказки)
+  &quot;accent&quot;: &quot;#f2f2f2&quot;,              // акцент: главная кнопка, включённый тумблер, прогресс
+  &quot;accent_hover&quot;: &quot;#ffffff&quot;,        // акцент при наведении
+  &quot;on_accent&quot;: &quot;#000000&quot;,           // текст на акценте
+  &quot;toggle_off&quot;: &quot;#3a3a3a&quot;,          // выключенный тумблер
+  &quot;knob_off&quot;: &quot;#9a9a9a&quot;,            // кружок выключенного тумблера
+  &quot;knob_on&quot;: &quot;#000000&quot;,             // кружок включённого тумблера
+  &quot;track&quot;: &quot;#2c2c2c&quot;,               // полоса прогресса (незаполненная)
+  &quot;ok&quot;: &quot;#74d680&quot;,                  // «готово»
+  &quot;ok_bg&quot;: &quot;#101610&quot;,               // фон зелёных плашек
+  &quot;err&quot;: &quot;#f06e6e&quot;,                 // ошибка
+  &quot;warn&quot;: &quot;#e8b44c&quot;,                // «внимание»
+  &quot;warn_bg&quot;: &quot;#1d180c&quot;,             // фон жёлтых плашек
+
+  // Раскладка и форма — меняют вид окна целиком. В окне программы не редактируются, только здесь.
+  &quot;layout&quot;: {
+    &quot;nav&quot;: &quot;left&quot;,                  // навигация: &quot;left&quot; — слева, &quot;top&quot; — сверху, &quot;bottom&quot; — снизу
+    &quot;nav_labels&quot;: true,             // подписи у значков навигации (false — только значки)
+    &quot;nav_width&quot;: 76,                // ширина левой навигации (60–260); от 140 — значок и подпись в строку
+    &quot;header&quot;: &quot;logo&quot;,               // в навигации: &quot;logo&quot; — значок программы, &quot;name&quot; — значок и название, &quot;none&quot; — ничего
+    &quot;column&quot;: 640,                  // ширина колонки с содержимым (420–1200)
+    &quot;cards&quot;: &quot;fill&quot;,                // карточки: &quot;fill&quot; — заливка, &quot;outline&quot; — рамка, &quot;none&quot; — без фона
+    &quot;shadow&quot;: &quot;none&quot;,               // под карточками: &quot;none&quot;, &quot;shadow&quot; — тень, &quot;glow&quot; — свечение цвета акцента
+    &quot;density&quot;: 1.0,                 // плотность (0.7–1.6): высота строк и кнопок; 0.85 — компактно, 1.25 — просторно
+    &quot;padding&quot;: 1.0,                 // внутренние отступы (0.5–2.5); при скруглении больше 1 растут сами
+    &quot;buttons&quot;: &quot;pill&quot;,              // кнопки: &quot;pill&quot; — скруглённые, &quot;rect&quot; — прямоугольные, &quot;outline&quot; — контур, &quot;flat&quot; — плоские,
+                                    //   &quot;tonal&quot; — как в Material 3: главная залита акцентом, обычные — цветом pill, маленькие — контур
+    &quot;button_radius&quot;: -1,            // скругление кнопок в точках (100 — «таблетка» целиком); -1 — по radius
+    &quot;field_radius&quot;: -1,             // скругление поля для ссылок в точках (Material 3: 4); -1 — по radius
+    &quot;nav_indicator&quot;: &quot;block&quot;,       // выбранный пункт навигации: &quot;block&quot; — весь пункт, &quot;pill&quot; — «таблетка» вокруг значка
+    &quot;switch&quot;: &quot;classic&quot;,            // тумблеры: &quot;classic&quot; или &quot;m3&quot; (крупнее, с рамкой в выключенном виде)
+    &quot;background&quot;: [],               // фон-градиент сверху вниз: 2–3 цвета, например [&quot;#0b0820&quot;, &quot;#1a0b2e&quot;]; [] — сплошной bg
+    &quot;background_image&quot;: &quot;&quot;,         // картинка PNG из этой папки поверх фона, например &quot;фон.png&quot;; &quot;&quot; — без картинки
+    &quot;image_opacity&quot;: 0.25,          // непрозрачность картинки (0–1)
+    &quot;font_scale&quot;: 1.0,              // размер шрифта (0.8–1.4)
+    &quot;bold_headings&quot;: false,         // жирные заголовки страниц и разделов
+    &quot;caps&quot;: &quot;lower&quot;                 // подписи разделов настроек: &quot;lower&quot; — как есть, &quot;upper&quot; — ПРОПИСНЫМИ
+  }
+
+  // Тема на Material 3 — достаточно одного seed-цвета. Уберите // у трёх строк ниже (и запятую
+  // после закрывающей скобки &quot;layout&quot;): роли M3 выведутся из seed, цвета окна и форма — из ролей,
+  // а всё, что задано в файле явно, останется как задано. Роли (&quot;scheme&quot;) можно указать и вручную —
+  // имена как в Jetpack Compose ColorScheme: primary, onPrimary, primaryContainer, surfaceContainerLow…
+  // &quot;m3&quot;: {
+  //   &quot;seed&quot;: &quot;#6750a4&quot;, &quot;dark&quot;: true
+  // }
+}
+</code></pre></details>
+
+<h2 id="colors">3. Цвета — где какой</h2>
+<p>Чтобы было видно, какой цвет где используется, каждому цвету здесь дан свой яркий оттенок. Номера на картинках — в таблице.</p>
+<div class="big"><figure><img src="инструкция/rainbow-look.png" alt="каждому цвету дан свой оттенок — номера ниже в таблице" loading="lazy"><figcaption>каждому цвету дан свой оттенок — номера ниже в таблице</figcaption></figure></div>
+<p></p>
+<div class="big"><figure><img src="инструкция/rainbow-download.png" alt="страница «скачать» в той же «радужной» теме" loading="lazy"><figcaption>страница «скачать» в той же «радужной» теме</figcaption></figure></div>
+<p></p>
+<table>
+  <tr><th>№</th><th></th><th>поле</th><th>где видно</th></tr>
+  <tr><td>1</td><td><span class="sw" style="background:#0d1b4d"></span></td><td><code>bg</code></td><td>фон окна</td></tr><tr><td>2</td><td><span class="sw" style="background:#4d0d2b"></span></td><td><code>sidebar</code></td><td>панель навигации</td></tr><tr><td>3</td><td><span class="sw" style="background:#ff00ff"></span></td><td><code>sidebar_line</code></td><td>край панели навигации (линия)</td></tr><tr><td>4</td><td><span class="sw" style="background:#0d4d2b"></span></td><td><code>surface</code></td><td>карточки, поле для ссылок, обычные кнопки</td></tr><tr><td>5</td><td><span class="sw" style="background:#5a5a10"></span></td><td><code>surface_hi</code></td><td>наведение и выбранный пункт навигации</td></tr><tr><td>6</td><td><span class="sw" style="background:#6b3a00"></span></td><td><code>pill</code></td><td>маленькие кнопки («маленькая», «сохранить»); у кнопок «tonal» — обычные кнопки и индикатор навигации</td></tr><tr><td>7</td><td><span class="sw" style="background:#00e5ff"></span></td><td><code>border</code></td><td>рамки кнопок, выпадающих списков, поля для ссылок</td></tr><tr><td>8</td><td><span class="sw" style="background:#ff8800"></span></td><td><code>divider</code></td><td>линии между строками в карточках</td></tr><tr><td>21</td><td><span class="sw" style="background:#ffff00"></span></td><td><code>outline</code></td><td>рамка пустой очереди на странице «скачать»</td></tr><tr><td>—</td><td><span class="sw" style="background:transparent"></span></td><td><code>window</code></td><td>всплывающие окна (выпадающий список, подтверждения)</td></tr><tr><td>9</td><td><span class="sw" style="background:#3a0d0d"></span></td><td><code>field</code></td><td>поля ввода (название темы, ключи)</td></tr><tr><td>—</td><td><span class="sw" style="background:transparent"></span></td><td><code>selection</code></td><td>выделение текста мышью</td></tr><tr><td>10</td><td><span class="sw" style="background:#ffffff"></span></td><td><code>text</code></td><td>основной текст</td></tr><tr><td>—</td><td><span class="sw" style="background:transparent"></span></td><td><code>text_hover</code></td><td>текст при наведении</td></tr><tr><td>11</td><td><span class="sw" style="background:#9ad0ff"></span></td><td><code>muted</code></td><td>подписи разделов, второстепенный текст</td></tr><tr><td>12</td><td><span class="sw" style="background:#ff9ad0"></span></td><td><code>faint</code></td><td>подсказки, бледный текст, номер версии</td></tr><tr><td>13</td><td><span class="sw" style="background:#00ff66"></span></td><td><code>accent</code></td><td>главная кнопка, выбранный вариант, включённый тумблер, прогресс</td></tr><tr><td>—</td><td><span class="sw" style="background:#66ff99"></span></td><td><code>accent_hover</code></td><td>главная кнопка при наведении</td></tr><tr><td>14</td><td><span class="sw" style="background:#000000"></span></td><td><code>on_accent</code></td><td>текст и значок на акценте</td></tr><tr><td>15</td><td><span class="sw" style="background:#8800ff"></span></td><td><code>toggle_off</code></td><td>выключенный тумблер</td></tr><tr><td>16</td><td><span class="sw" style="background:#ffcc00"></span></td><td><code>knob_off</code></td><td>кружок выключенного тумблера</td></tr><tr><td>17</td><td><span class="sw" style="background:#ff0000"></span></td><td><code>knob_on</code></td><td>кружок включённого тумблера</td></tr><tr><td>—</td><td><span class="sw" style="background:transparent"></span></td><td><code>track</code></td><td>незаполненная часть полосы прогресса и ползунка</td></tr><tr><td>18</td><td><span class="sw" style="background:#66ff66"></span></td><td><code>ok</code></td><td>«готово», «подключено»</td></tr><tr><td>—</td><td><span class="sw" style="background:transparent"></span></td><td><code>ok_bg</code></td><td>фон зелёных плашек (подсказка про расширение)</td></tr><tr><td>19</td><td><span class="sw" style="background:#ff4444"></span></td><td><code>err</code></td><td>ошибки</td></tr><tr><td>20</td><td><span class="sw" style="background:#ffd000"></span></td><td><code>warn</code></td><td>«внимание», ожидание</td></tr><tr><td>—</td><td><span class="sw" style="background:transparent"></span></td><td><code>warn_bg</code></td><td>фон жёлтых плашек (предупреждение про spotify)</td></tr>
+</table>
+<p>Цвета без номера на этих двух картинках не видны: они появляются во всплывающих окнах, при наведении, при загрузке или на плашках-подсказках.</p>
+<div class="note">Совет: делайте <code>text</code> контрастным к <code>bg</code> и <code>surface</code>, а <code>on_accent</code> — к <code>accent</code>. Если тема светлая (фон светлее середины), программа сама переключает служебные элементы (полосы прокрутки, тени) на светлый вид.</div>
+
+<h2 id="params">4. Форма и раскладка — все параметры</h2>
+<p>Первые три параметра стоят в файле сразу (как <code>"radius"</code>), остальные — внутри <code>"layout": { … }</code>. Под каждым — скриншоты «до» (тёмная тема) и «после» (изменён только этот параметр).</p>
+<section class="param"><h3>Скругление углов</h3><pre><code>&quot;radius&quot;: 1.0</code></pre><p><b>значения:</b> 0 … 3 (дробные можно: 1.5)</p><p>Во сколько раз скруглять углы карточек, кнопок и окон. 1 — как в тёмной, 0 — квадратные, 2.5 — почти круглые. Внутренние отступы растут вместе со скруглением, чтобы текст не прилипал к углам. Меняется и в программе ползунком.</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до (1.0)" loading="lazy"><figcaption>до (1.0)</figcaption></figure><figure><img src="инструкция/radius-0.png" alt="0" loading="lazy"><figcaption>0</figcaption></figure><figure><img src="инструкция/radius-25.png" alt="2.5" loading="lazy"><figcaption>2.5</figcaption></figure></div></section><section class="param"><h3>Шрифт</h3><pre><code>&quot;font&quot;: &quot;mono&quot;</code></pre><p><b>значения:</b> &quot;mono&quot; — моноширинный (Cascadia Mono / Consolas), &quot;sans&quot; — Segoe UI, &quot;roboto&quot; — Roboto (если не установлен — Segoe UI)</p><p>Шрифт всего окна. Меняется и в программе переключателем.</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до (mono)" loading="lazy"><figcaption>до (mono)</figcaption></figure><figure><img src="инструкция/font-sans.png" alt="sans" loading="lazy"><figcaption>sans</figcaption></figure><figure><img src="инструкция/font-roboto.png" alt="roboto" loading="lazy"><figcaption>roboto</figcaption></figure></div></section><section class="param"><h3>Значки</h3><pre><code>&quot;icons&quot;: &quot;line&quot;</code></pre><p><b>значения:</b> &quot;line&quot; — тонкие значки Windows, &quot;symbols&quot; — обычные знаки ↓ ★ ⚙ ☰</p><p>Набор значков в навигации и на кнопках.</p><div class="figs"><figure><img src="инструкция/base-download.png" alt="до (line)" loading="lazy"><figcaption>до (line)</figcaption></figure><figure><img src="инструкция/icons-symbols.png" alt="symbols" loading="lazy"><figcaption>symbols</figcaption></figure></div></section><section class="param"><h3>Навигация: где</h3><pre><code>&quot;layout&quot;: { &quot;nav&quot;: &quot;left&quot; }</code></pre><p><b>значения:</b> &quot;left&quot; — слева, &quot;top&quot; — полосой сверху, &quot;bottom&quot; — полосой снизу</p><p>Где стоят «скачать / подписки / настройки / журнал».</p><div class="figs"><figure><img src="инструкция/base-download.png" alt="до (left)" loading="lazy"><figcaption>до (left)</figcaption></figure><figure><img src="инструкция/nav-top.png" alt="top" loading="lazy"><figcaption>top</figcaption></figure><figure><img src="инструкция/nav-bottom.png" alt="bottom" loading="lazy"><figcaption>bottom</figcaption></figure></div></section><section class="param"><h3>Навигация: подписи</h3><pre><code>&quot;layout&quot;: { &quot;nav_labels&quot;: true }</code></pre><p><b>значения:</b> true / false</p><p>false — только значки (название видно при наведении).</p><div class="figs"><figure><img src="инструкция/base-download.png" alt="до (true)" loading="lazy"><figcaption>до (true)</figcaption></figure><figure><img src="инструкция/nav-labels-off.png" alt="false" loading="lazy"><figcaption>false</figcaption></figure></div></section><section class="param"><h3>Навигация: ширина</h3><pre><code>&quot;layout&quot;: { &quot;nav_width&quot;: 76 }</code></pre><p><b>значения:</b> 60 … 260 (только для &quot;left&quot;)</p><p>Ширина левой панели. От 140 — значок и подпись в одну строку, как в боковых меню.</p><div class="figs"><figure><img src="инструкция/base-download.png" alt="до (76)" loading="lazy"><figcaption>до (76)</figcaption></figure><figure><img src="инструкция/nav-wide.png" alt="200 + &quot;header&quot;: &quot;name&quot;" loading="lazy"><figcaption>200 + &quot;header&quot;: &quot;name&quot;</figcaption></figure></div></section><section class="param"><h3>Шапка</h3><pre><code>&quot;layout&quot;: { &quot;header&quot;: &quot;logo&quot; }</code></pre><p><b>значения:</b> &quot;logo&quot; — значок программы, &quot;name&quot; — значок и название, &quot;none&quot; — ничего</p><p>Что стоит в начале навигации. Название видно в широкой левой панели и в полосе сверху/снизу.</p><div class="figs"><figure><img src="инструкция/base-download.png" alt="до (logo)" loading="lazy"><figcaption>до (logo)</figcaption></figure><figure><img src="инструкция/header-none.png" alt="none" loading="lazy"><figcaption>none</figcaption></figure><figure><img src="инструкция/nav-wide.png" alt="name (широкая панель)" loading="lazy"><figcaption>name (широкая панель)</figcaption></figure></div></section><section class="param"><h3>Выбранный пункт навигации</h3><pre><code>&quot;layout&quot;: { &quot;nav_indicator&quot;: &quot;block&quot; }</code></pre><p><b>значения:</b> &quot;block&quot; — подсвечен весь пункт, &quot;pill&quot; — «таблетка» вокруг значка (как Navigation Rail в Material 3)</p><p>Как выделяется открытая страница. Цвет «таблетки» — pill.</p><div class="figs"><figure><img src="инструкция/base-download.png" alt="до (block)" loading="lazy"><figcaption>до (block)</figcaption></figure><figure><img src="инструкция/nav-indicator-pill.png" alt="pill" loading="lazy"><figcaption>pill</figcaption></figure></div></section><section class="param"><h3>Ширина колонки</h3><pre><code>&quot;layout&quot;: { &quot;column&quot;: 640 }</code></pre><p><b>значения:</b> 420 … 1200</p><p>Наибольшая ширина колонки с содержимым по центру окна. Заметно, только если окно шире.</p></section><section class="param"><h3>Карточки</h3><pre><code>&quot;layout&quot;: { &quot;cards&quot;: &quot;fill&quot; }</code></pre><p><b>значения:</b> &quot;fill&quot; — залиты цветом surface, &quot;outline&quot; — полупрозрачные с рамкой border, &quot;none&quot; — без фона</p><p>Вид карточек настроек и поля для ссылок.</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до (fill)" loading="lazy"><figcaption>до (fill)</figcaption></figure><figure><img src="инструкция/cards-outline.png" alt="outline" loading="lazy"><figcaption>outline</figcaption></figure><figure><img src="инструкция/cards-none.png" alt="none" loading="lazy"><figcaption>none</figcaption></figure></div></section><section class="param"><h3>Тень и свечение</h3><pre><code>&quot;layout&quot;: { &quot;shadow&quot;: &quot;none&quot; }</code></pre><p><b>значения:</b> &quot;none&quot;, &quot;shadow&quot; — мягкая тень, &quot;glow&quot; — свечение цвета accent</p><p>Под карточками. Тень лучше видна на светлых темах, свечение — на тёмных.</p><div class="figs"><figure><img src="инструкция/shadow-light-base.png" alt="светлая без тени" loading="lazy"><figcaption>светлая без тени</figcaption></figure><figure><img src="инструкция/shadow-shadow.png" alt="shadow" loading="lazy"><figcaption>shadow</figcaption></figure><figure><img src="инструкция/shadow-glow.png" alt="glow (+ outline)" loading="lazy"><figcaption>glow (+ outline)</figcaption></figure></div></section><section class="param"><h3>Плотность</h3><pre><code>&quot;layout&quot;: { &quot;density&quot;: 1.0 }</code></pre><p><b>значения:</b> 0.7 … 1.6</p><p>Высота строк и кнопок: 0.8 — компактно, 1.3 — просторно.</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до (1.0)" loading="lazy"><figcaption>до (1.0)</figcaption></figure><figure><img src="инструкция/density-08.png" alt="0.8" loading="lazy"><figcaption>0.8</figcaption></figure><figure><img src="инструкция/density-14.png" alt="1.4" loading="lazy"><figcaption>1.4</figcaption></figure></div></section><section class="param"><h3>Отступы</h3><pre><code>&quot;layout&quot;: { &quot;padding&quot;: 1.0 }</code></pre><p><b>значения:</b> 0.5 … 2.5</p><p>Внутренние поля карточек и кнопок.</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до (1.0)" loading="lazy"><figcaption>до (1.0)</figcaption></figure><figure><img src="инструкция/padding-18.png" alt="1.8" loading="lazy"><figcaption>1.8</figcaption></figure></div></section><section class="param"><h3>Кнопки</h3><pre><code>&quot;layout&quot;: { &quot;buttons&quot;: &quot;pill&quot; }</code></pre><p><b>значения:</b> &quot;pill&quot; — скруглённые, &quot;rect&quot; — прямоугольные, &quot;outline&quot; — контур, &quot;flat&quot; — без рамок, &quot;tonal&quot; — как в Material 3 (обычные — цветом pill, маленькие — контуром)</p><p>Вид всех кнопок и переключателя вариантов.</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до (pill)" loading="lazy"><figcaption>до (pill)</figcaption></figure><figure><img src="инструкция/buttons-rect.png" alt="rect" loading="lazy"><figcaption>rect</figcaption></figure><figure><img src="инструкция/buttons-outline.png" alt="outline" loading="lazy"><figcaption>outline</figcaption></figure><figure><img src="инструкция/buttons-flat.png" alt="flat" loading="lazy"><figcaption>flat</figcaption></figure><figure><img src="инструкция/buttons-tonal.png" alt="tonal" loading="lazy"><figcaption>tonal</figcaption></figure></div></section><section class="param"><h3>Скругление кнопок</h3><pre><code>&quot;layout&quot;: { &quot;button_radius&quot;: -1 }</code></pre><p><b>значения:</b> -1 — по radius, 0 … 100 — в точках (100 — «таблетка»)</p><p>Отдельно от radius: можно оставить карточки почти квадратными, а кнопки — круглыми.</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до (-1)" loading="lazy"><figcaption>до (-1)</figcaption></figure><figure><img src="инструкция/button-radius-100.png" alt="100" loading="lazy"><figcaption>100</figcaption></figure></div></section><section class="param"><h3>Скругление поля для ссылок</h3><pre><code>&quot;layout&quot;: { &quot;field_radius&quot;: -1 }</code></pre><p><b>значения:</b> -1 — по radius, 0 … 100 — в точках</p><p>Только поле «вставь ссылку».</p><div class="figs"><figure><img src="инструкция/base-download.png" alt="до (-1)" loading="lazy"><figcaption>до (-1)</figcaption></figure><figure><img src="инструкция/field-radius-0.png" alt="0" loading="lazy"><figcaption>0</figcaption></figure></div></section><section class="param"><h3>Тумблеры</h3><pre><code>&quot;layout&quot;: { &quot;switch&quot;: &quot;classic&quot; }</code></pre><p><b>значения:</b> &quot;classic&quot; — как в тёмной, &quot;m3&quot; — крупнее, с рамкой в выключенном виде (Material 3)</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до (classic)" loading="lazy"><figcaption>до (classic)</figcaption></figure><figure><img src="инструкция/switch-m3.png" alt="m3" loading="lazy"><figcaption>m3</figcaption></figure></div></section><section class="param"><h3>Фон-градиент</h3><pre><code>&quot;layout&quot;: { &quot;background&quot;: [&quot;#0d1b4d&quot;, &quot;#2b0d4d&quot;, &quot;#000000&quot;] }</code></pre><p><b>значения:</b> [] — сплошной цвет bg; 2 или 3 цвета — градиент сверху вниз</p><p>Рисуется под содержимым (панель навигации остаётся цветом sidebar).</p><div class="figs"><figure><img src="инструкция/base-download.png" alt="до" loading="lazy"><figcaption>до</figcaption></figure><figure><img src="инструкция/bg-gradient.png" alt="3 цвета" loading="lazy"><figcaption>3 цвета</figcaption></figure></div></section><section class="param"><h3>Картинка фона</h3><pre><code>&quot;layout&quot;: { &quot;background_image&quot;: &quot;фон.png&quot;, &quot;image_opacity&quot;: 0.35 }</code></pre><p><b>значения:</b> имя PNG-файла в папке тем; непрозрачность 0 … 1</p><p>Картинка растягивается на всё окно с сохранением пропорций (лишнее обрезается) и рисуется поверх градиента. Только PNG. Для пробы скопируйте <code>инструкция\фон-пример.png</code> в папку тем и укажите <code>"background_image": "фон-пример.png"</code>.</p><div class="figs"><figure><img src="инструкция/base-download.png" alt="до" loading="lazy"><figcaption>до</figcaption></figure><figure><img src="инструкция/bg-image.png" alt="картинка, 0.35" loading="lazy"><figcaption>картинка, 0.35</figcaption></figure></div></section><section class="param"><h3>Размер шрифта</h3><pre><code>&quot;layout&quot;: { &quot;font_scale&quot;: 1.0 }</code></pre><p><b>значения:</b> 0.8 … 1.4</p><p>Весь текст и значки. Для масштаба всего окна есть «масштаб» в настройках → интерфейс.</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до (1.0)" loading="lazy"><figcaption>до (1.0)</figcaption></figure><figure><img src="инструкция/font-scale-125.png" alt="1.25" loading="lazy"><figcaption>1.25</figcaption></figure></div></section><section class="param"><h3>Жирные заголовки</h3><pre><code>&quot;layout&quot;: { &quot;bold_headings&quot;: false }</code></pre><p><b>значения:</b> true / false</p><p>Заголовки страниц и разделов настроек.</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до" loading="lazy"><figcaption>до</figcaption></figure><figure><img src="инструкция/bold.png" alt="true" loading="lazy"><figcaption>true</figcaption></figure></div></section><section class="param"><h3>Подписи разделов</h3><pre><code>&quot;layout&quot;: { &quot;caps&quot;: &quot;lower&quot; }</code></pre><p><b>значения:</b> &quot;lower&quot; — как есть, &quot;upper&quot; — ПРОПИСНЫМИ</p><div class="figs"><figure><img src="инструкция/base-look.png" alt="до" loading="lazy"><figcaption>до</figcaption></figure><figure><img src="инструкция/caps-upper.png" alt="upper" loading="lazy"><figcaption>upper</figcaption></figure></div></section>
+
+<h2 id="recipes">5. Рецепты: от нуля до неузнаваемой темы</h2>
+
+<h3>Рецепт А: «ночной неон» — навигация сверху, градиент, рамки со свечением</h3>
+<div class="steps">
+  <div><p><b>Шаг 1.</b> «создать» на основе тёмной, затем в программе пипеткой (или в файле) — тёмно-фиолетовые <code>bg</code>, <code>sidebar</code>, <code>surface</code> и бирюзовый <code>accent</code> <code>"#00e0ff"</code>.</p></div>
+  <figure><img src="инструкция/a1.png" alt="шаг 1: только цвета" loading="lazy"><figcaption>шаг 1: только цвета</figcaption></figure>
+  <div><p><b>Шаг 2.</b> В файле темы добавьте раздел:</p><pre><code>&quot;layout&quot;: {
+    &quot;nav&quot;: &quot;top&quot;, &quot;header&quot;: &quot;name&quot;,
+    &quot;background&quot;: [&quot;#0b0820&quot;, &quot;#1a0b2e&quot;, &quot;#061428&quot;]
+  }</code></pre></div>
+  <figure><img src="инструкция/a2.png" alt="шаг 2: навигация сверху и градиент" loading="lazy"><figcaption>шаг 2: навигация сверху и градиент</figcaption></figure>
+  <div><p><b>Шаг 3.</b> Дополните раздел <code>layout</code>:</p><pre><code>&quot;layout&quot;: {
+    &quot;nav&quot;: &quot;top&quot;, &quot;header&quot;: &quot;name&quot;,
+    &quot;background&quot;: [&quot;#0b0820&quot;, &quot;#1a0b2e&quot;, &quot;#061428&quot;],
+    &quot;cards&quot;: &quot;outline&quot;, &quot;shadow&quot;: &quot;glow&quot;, &quot;buttons&quot;: &quot;outline&quot;,
+    &quot;caps&quot;: &quot;upper&quot;, &quot;bold_headings&quot;: true
+  }</code></pre></div>
+  <figure><img src="инструкция/a3.png" alt="шаг 3: рамки со свечением, контурные кнопки" loading="lazy"><figcaption>шаг 3: рамки со свечением, контурные кнопки</figcaption></figure>
+  <div><p>Итог на странице настроек: подписи разделов прописными, жирные заголовки, контурные кнопки.</p></div>
+  <figure><img src="инструкция/a3-look.png" alt="итог: настройки" loading="lazy"><figcaption>итог: настройки</figcaption></figure>
+</div>
+
+<h3>Рецепт Б: «мягкая светлая» — навигация снизу, круглые углы, тени</h3>
+<div class="steps">
+  <div><p><b>Шаг 1.</b> «создать» на основе <b>светлой</b>, шрифт — «segoe ui», <code>accent</code> — розовый <code>"#e0457b"</code>.</p></div>
+  <figure><img src="инструкция/b1.png" alt="шаг 1: светлые цвета, segoe ui, розовый акцент" loading="lazy"><figcaption>шаг 1: светлые цвета, segoe ui, розовый акцент</figcaption></figure>
+  <div><p><b>Шаг 2.</b></p><pre><code>&quot;radius&quot;: 2.0,
+  &quot;layout&quot;: { &quot;nav&quot;: &quot;bottom&quot;, &quot;nav_labels&quot;: false, &quot;header&quot;: &quot;none&quot; }</code></pre></div>
+  <figure><img src="инструкция/b2.png" alt="шаг 2: навигация снизу, круглые углы" loading="lazy"><figcaption>шаг 2: навигация снизу, круглые углы</figcaption></figure>
+  <div><p><b>Шаг 3.</b> Тени, плоские кнопки, просторнее и лёгкий градиент:</p><pre><code>&quot;radius&quot;: 2.0, &quot;bg&quot;: &quot;#fdf3f6&quot;,
+  &quot;layout&quot;: {
+    &quot;nav&quot;: &quot;bottom&quot;, &quot;nav_labels&quot;: false, &quot;header&quot;: &quot;none&quot;,
+    &quot;shadow&quot;: &quot;shadow&quot;, &quot;buttons&quot;: &quot;flat&quot;, &quot;density&quot;: 1.15,
+    &quot;background&quot;: [&quot;#fff0f5&quot;, &quot;#f0f4ff&quot;]
+  }</code></pre></div>
+  <figure><img src="инструкция/b3.png" alt="шаг 3: тени, плоские кнопки, градиент" loading="lazy"><figcaption>шаг 3: тени, плоские кнопки, градиент</figcaption></figure>
+</div>
+
+<h2 id="m3">6. Тема из одного цвета (Material 3)</h2>
+<p>Можно не подбирать 28 цветов вручную: задайте один «seed»-цвет — программа построит по правилам Material Design 3 всю палитру (основной, вторичный, третичный цвета, поверхности, рамки, ошибки) и форму M3: кнопки-«таблетки», навигацию с «таблеткой» вокруг значка, тумблеры M3, шрифт Roboto.</p>
+<pre><code>{
+  "name": "зелёная m3",
+  "m3": { "seed": "#386a20", "dark": true }
+}</code></pre>
+<div class="steps"><figure><img src="инструкция/c-dark.png" alt="&quot;dark&quot;: true" loading="lazy"><figcaption>&quot;dark&quot;: true</figcaption></figure><figure><img src="инструкция/c-light.png" alt="&quot;dark&quot;: false" loading="lazy"><figcaption>&quot;dark&quot;: false</figcaption></figure></div>
+<p>Любое поле, указанное в файле явно (например, <code>"accent"</code> или <code>"layout"</code>), перекрывает выведенное из seed. После сохранения из программы в файле появится <code>"scheme"</code> — все роли Material 3; их можно править вручную.</p>
+
+<h2 id="share">7. Как поделиться темой</h2>
+<ul>
+  <li>Тема — <b>один файл</b>. В программе: выберите свою тему → <b>«экспорт…»</b> → сохраните, например, на рабочий стол и отправьте.</li>
+  <li>Друг нажимает <b>«импорт…»</b> и выбирает файл — тема добавляется в папку тем и сразу включается. Или просто кладёт файл в папку тем.</li>
+  <li>Если в теме есть <b>картинка фона</b> (<code>background_image</code>), отправьте и её PNG-файл: его нужно положить в папку тем рядом с темой, под тем же именем. Без картинки тема всё равно откроется — просто без неё.</li>
+  <li>Шрифты Roboto и Segoe UI берутся из Windows; если Roboto нет — будет Segoe UI.</li>
+</ul>
+
+<h2 id="errors">8. Частые ошибки и как вернуть тёмную</h2>
+<p>Если в файле опечатка, тема не появится в списке, а под списком тем будет написано, в каком файле и в какой строке ошибка:</p>
+<div class="figs"><figure><img src="инструкция/error.png" alt="файл с опечаткой: тема не появилась в списке, под ним — ошибка" loading="lazy"><figcaption>файл с опечаткой: тема не появилась в списке, под ним — ошибка</figcaption></figure></div>
+<p>Как читать сообщение: <code>expected `,` or `}` — строка 4, столбец 3</code> — «в строке 4 ожидалась запятая или закрывающая скобка». Обычно ошибка — в конце предыдущей строки.</p>
+<table>
+  <tr><th>что видно</th><th>в чём дело</th></tr>
+  <tr><td><code>expected `,` or `}`</code></td><td>пропущена запятая между полями (в конце предыдущей строки)</td></tr>
+  <tr><td><code>trailing comma</code></td><td>лишняя запятая после последнего поля перед <code>}</code></td></tr>
+  <tr><td><code>цвет «…» — нужно #rrggbb</code></td><td>цвет записан не так: нужно <code>"#1a2b3c"</code> — с решёткой и в кавычках</td></tr>
+  <tr><td><code>key must be a string</code></td><td>имя поля без кавычек: нужно <code>"accent"</code>, а не <code>accent</code></td></tr>
+  <tr><td><code>invalid type: string "1.5", expected f32</code></td><td>число в кавычках: нужно <code>1.5</code> без кавычек</td></tr>
+  <tr><td>тема не меняется</td><td>поле <code>nav</code>, <code>cards</code> и т. п. стоит не внутри <code>"layout": { … }</code>, или в значении опечатка — неизвестные значения заменяются на обычные</td></tr>
+  <tr><td>пропала картинка фона</td><td>файл не в папке тем, не PNG или имя с папкой (<code>"C:\…"</code>) — нужно только имя файла</td></tr>
+</table>
+<div class="note"><b>Как вернуть тёмную:</b> настройки → оформление → тема → «тёмная». Если файл выбранной темы удалили или он сломан при запуске программы — программа сама откроется в тёмной теме. Свои темы при этом никуда не деваются.</div>
+<p style="color:var(--muted);margin-top:40px">Эта инструкция обновляется вместе с программой; ваши файлы тем при этом не трогаются.</p>
+</main>
+</body>
+</html>

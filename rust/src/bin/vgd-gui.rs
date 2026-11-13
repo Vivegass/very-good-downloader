@@ -530,6 +530,10 @@ impl App {
         }
         let theme = theme::load(&s.theme);
         apply_theme(&cc.egui_ctx, &theme);
+        // инструкция по темам — в папку тем (только если её нет или она старее)
+        std::thread::spawn(|| {
+            let _ = theme::guide::ensure(&theme::dir());
+        });
         cc.egui_ctx.set_zoom_factor(s.ui_scale.clamp(0.5, 3.0));
         let logo = eframe::icon_data::from_png_bytes(include_bytes!("../../app.png")).ok().map(|ic| {
             let img = egui::ColorImage::from_rgba_unmultiplied([ic.width as usize, ic.height as usize], &ic.rgba);
@@ -2593,6 +2597,7 @@ impl eframe::App for App {
         self.ui_sort_plan(&ctx);
         self.ui_topics(&ctx);
         self.ui_confirm_exit(&ctx);
+        self.watch_theme_file(&ctx);
         if self.busy() || self.side_task {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }

@@ -17,6 +17,15 @@ pub(crate) struct ThemeUi {
     /// «удалить» нажато один раз — ждём подтверждения
     confirm_delete: bool,
     msg: String,
+    /// файлы тем, которые не прочитались (опечатка в JSON и т. п.)
+    errors: Vec<String>,
+    /// время изменения файла выбранной своей темы — чтобы подхватить правку в блокноте
+    mtime: Option<std::time::SystemTime>,
+    next_check: Option<std::time::Instant>,
+}
+
+fn modified(p: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
 impl App {
@@ -26,6 +35,7 @@ impl App {
         self.theme = t;
         self.s.theme = key.to_string();
         self.themes.confirm_delete = false;
+        self.themes.mtime = None;
         apply_theme(ctx, &self.theme);
     }
 
@@ -40,10 +50,46 @@ impl App {
         }
         self.themes.dirty = false;
         if let Some(stem) = self.custom_stem() {
-            if let Err(e) = write_to(&theme::dir().join(format!("{stem}.json")), &self.theme) {
+            let path = theme::dir().join(format!("{stem}.json"));
+            if let Err(e) = write_to(&path, &self.theme) {
                 self.themes.msg = e;
             }
+            self.themes.mtime = modified(&path);
             self.themes.customs = None;
+        }
+    }
+
+    /// Файл выбранной своей темы изменили снаружи (в блокноте) — перечитать и применить, раз в секунду.
+    pub(crate) fn watch_theme_file(&mut self, ctx: &egui::Context) {
+        let Some(stem) = self.custom_stem() else { return };
+        if self.themes.dirty {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self.themes.next_check.is_some_and(|t| now < t) {
+            return;
+        }
+        self.themes.next_check = Some(now + std::time::Duration::from_secs(1));
+        ctx.request_repaint_after(std::time::Duration::from_millis(1100));
+        let path = theme::dir().join(format!("{stem}.json"));
+        let m = modified(&path);
+        if self.themes.mtime.is_none() {
+            self.themes.mtime = m;
+            return;
+        }
+        if m.is_none() || m == self.themes.mtime {
+            return;
+        }
+        self.themes.mtime = m;
+        self.themes.customs = None;
+        match read_from(&path) {
+            Ok(t) => {
+                self.theme = t;
+                self.themes.name_for.clear();
+                self.themes.msg = "файл темы изменён — применено".into();
+                apply_theme(ctx, &self.theme);
+            }
+            Err(e) => self.themes.msg = e,
         }
     }
 
@@ -67,7 +113,9 @@ impl App {
             self.flush_theme();
         }
         if self.themes.customs.is_none() {
-            self.themes.customs = Some(theme::list_custom());
+            let (list, errors) = theme::list_custom();
+            self.themes.customs = Some(list);
+            self.themes.errors = errors;
         }
         let custom = self.custom_stem();
         if self.themes.name_for != self.s.theme {
@@ -111,6 +159,9 @@ impl App {
                 if small_pill(ui, "папка тем").clicked() {
                     let dir = theme::dir();
                     theme::ensure_example(&dir);
+                    if let Err(e) = theme::guide::ensure(&dir) {
+                        self.themes.msg = format!("не записать инструкцию: {e}");
+                    }
                     open_path(&dir);
                     self.themes.customs = None;
                 }
@@ -133,6 +184,14 @@ impl App {
                 }
             });
         });
+
+        for e in &self.themes.errors {
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(e).size(11.5).color(pal().err)).wrap());
+        }
+        if !self.themes.errors.is_empty() {
+            hint(ui, "исправьте файл и нажмите на список тем — он перечитается. как читать ошибку — в «КАК СДЕЛАТЬ ТЕМУ.html» в папке тем.");
+        }
 
         // Образец: всё окно и так меняется сразу, а здесь — все виды кнопок рядом.
         ui.add_space(10.0);
@@ -256,6 +315,7 @@ impl App {
         }
         self.theme.name = name.clone();
         let dir = theme::dir();
+        self.themes.mtime = None;
         let old = dir.join(format!("{stem}.json"));
         // Имя файла — по названию, если такое свободно.
         let new_stem = if slug(&name) == stem { stem.to_string() } else { free_stem_in(&dir, &name) };

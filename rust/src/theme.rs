@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::appinfo::data_dir;
 
+pub mod guide;
 pub mod m3;
 use m3::M3;
 
@@ -736,7 +737,12 @@ pub fn dir() -> PathBuf {
 /// Прочитать тему из файла.
 pub fn read_from(path: &Path) -> Result<Theme, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("не прочитать {}: {e}", path.display()))?;
-    let bad = |e: serde_json::Error| format!("{} — не тема: {e}", path.display());
+    let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    let bad = |e: serde_json::Error| {
+        // «expected `,` at line 5 column 3» → понятнее по-русски
+        let m = e.to_string().replace(" at line ", " — строка ").replace(" column ", ", столбец ");
+        format!("«{file}» не прочитан: {m}")
+    };
     let v: serde_json::Value = serde_json::from_str(&strip_comments(text.trim_start_matches('\u{feff}'))).map_err(bad)?;
     let named = v.get("name").and_then(|n| n.as_str()).is_some_and(|s| !s.trim().is_empty());
     // Тема на Material 3: всё, что не задано в файле, — из ролей схемы (seed → роли → цвета окна).
@@ -785,24 +791,33 @@ pub fn write_to(path: &Path, t: &Theme) -> Result<(), String> {
 
 /// Свои темы из папки: (имя файла без .json, тема), по названию.
 pub fn list_custom_in(dir: &Path) -> Vec<(String, Theme)> {
+    list_custom_report(dir).0
+}
+
+/// Свои темы из папки и ошибки чтения файлов, которые не удалось прочитать.
+pub fn list_custom_report(dir: &Path) -> (Vec<(String, Theme)>, Vec<String>) {
     let mut out = Vec::new();
+    let mut errors = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
             if p.extension().and_then(|x| x.to_str()).map(|x| x.eq_ignore_ascii_case("json")) != Some(true) {
                 continue;
             }
-            if let (Some(stem), Ok(t)) = (p.file_stem().map(|s| s.to_string_lossy().into_owned()), read_from(&p)) {
-                out.push((stem, t));
+            let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            match read_from(&p) {
+                Ok(t) => out.push((stem, t)),
+                Err(e) => errors.push(e),
             }
         }
     }
     out.sort_by_key(|(_, t)| t.name.to_lowercase());
-    out
+    errors.sort();
+    (out, errors)
 }
 
-pub fn list_custom() -> Vec<(String, Theme)> {
-    list_custom_in(&dir())
+pub fn list_custom() -> (Vec<(String, Theme)>, Vec<String>) {
+    list_custom_report(&dir())
 }
 
 /// Имя файла из названия темы: без запрещённых в Windows знаков.
