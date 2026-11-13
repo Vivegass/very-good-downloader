@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use crate::appinfo::{command, vtuple};
 
 /// Само расширение (вшито в программу).
-pub const EXTENSION_JS: &str = include_str!("../../spicetify/vgd.js");
+pub const EXTENSION_JS: &str = include_str!("../../../spicetify/vgd.js");
 const EXT_NAME: &str = "vgd.js";
 
 fn env_dir(var: &str) -> PathBuf {

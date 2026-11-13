@@ -1,0 +1,38 @@
+[package]
+name = "vgd"
+version.workspace = true
+edition.workspace = true
+description = "Very Good Downloader: скачивание с YouTube (yt-dlp + ffmpeg)"
+build = "build.rs"
+
+[lib]
+name = "vgd"
+path = "src/lib.rs"
+
+# Консоль: vgd.exe
+[[bin]]
+name = "vgd"
+path = "src/bin/vgd.rs"
+
+# Окно: при упаковке переименовывается в «Very Good Downloader.exe»
+[[bin]]
+name = "vgd-gui"
+path = "src/bin/vgd-gui.rs"
+
+[dependencies]
+vgd-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+lexopt = "0.3"
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard", "accesskit"] }
+rfd = "0.17"
+arboard = { version = "3", default-features = false }
+tray-icon = "0.26"
+wry = "0.57.1"
+tao = "0.37.2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+
+[build-dependencies]
+winresource = "0.1"

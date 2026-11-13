@@ -4347,19 +4347,38 @@ name = "vgd"
 version = "1.11.0"
 dependencies = [
  "arboard",
- "base64",
  "eframe",
- "hmac",
  "lexopt",
  "rfd",
  "serde",
  "serde_json",
- "sha2 0.11.1",
  "tao",
  "tray-icon",
+ "vgd-core",
  "winreg",
  "winresource",
  "wry",
+]
+
+[[package]]
+name = "vgd-android"
+version = "1.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vgd-core",
+]
+
+[[package]]
+name = "vgd-core"
+version = "1.11.0"
+dependencies = [
+ "base64",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "winreg",
 ]
 
 [[package]]

@@ -1,43 +1,20 @@
-[package]
-name = "vgd"
+# Very Good Downloader — рабочее пространство:
+#   core    — ядро (vgd-core): загрузка, музыка, сортировка, настройки, темы, очередь; без окна и Windows-API
+#   desktop — программа для Windows (vgd): окно vgd-gui, консоль vgd, трей, расширение, WebView2
+#   android — библиотека libvgd.so для APK (UniFFI), собирается cargo-ndk
+[workspace]
+resolver = "2"
+members = ["core", "desktop", "android"]
+# `cargo build --release` / `cargo test --lib` в rust/ — как раньше, версия для ПК.
+default-members = ["core", "desktop"]
+
+[workspace.package]
 version = "1.11.0"
 edition = "2021"
-description = "Very Good Downloader: скачивание с YouTube (yt-dlp + ffmpeg)"
-build = "build.rs"
 
-[lib]
-name = "vgd"
-path = "src/lib.rs"
-
-# Консоль: vgd.exe
-[[bin]]
-name = "vgd"
-path = "src/bin/vgd.rs"
-
-# Окно: при упаковке переименовывается в «Very Good Downloader.exe»
-[[bin]]
-name = "vgd-gui"
-path = "src/bin/vgd-gui.rs"
-
-[dependencies]
+[workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-lexopt = "0.3"
-eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard", "accesskit"] }
-rfd = "0.17"
-arboard = { version = "3", default-features = false }
-tray-icon = "0.26"
-wry = "0.57.1"
-tao = "0.37.2"
-hmac = "0.13.0"
-sha2 = "0.11.1"
-base64 = "0.23.1"
-
-[target.'cfg(windows)'.dependencies]
-winreg = "0.56"
-
-[build-dependencies]
-winresource = "0.1"
 
 [profile.release]
 opt-level = "s"

@@ -150,6 +150,7 @@ fn parse() -> Result<Args, lexopt::Error> {
 }
 
 fn main() -> ExitCode {
+    vgd::vk_web::install();
     let mut s = Settings::load();
     let a = match parse() {
         Ok(a) => a,

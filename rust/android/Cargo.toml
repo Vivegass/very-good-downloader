@@ -1,0 +1,15 @@
+[package]
+name = "vgd-android"
+version.workspace = true
+edition.workspace = true
+description = "Very Good Downloader: libvgd.so для APK (ядро + UniFFI)"
+
+[lib]
+name = "vgd"
+crate-type = ["cdylib", "lib"]
+path = "src/lib.rs"
+
+[dependencies]
+vgd-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true

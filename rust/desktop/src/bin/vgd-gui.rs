@@ -548,7 +548,7 @@ impl App {
             let _ = theme::guide::ensure(&theme::dir());
         });
         cc.egui_ctx.set_zoom_factor(s.ui_scale.clamp(0.5, 3.0));
-        let logo = eframe::icon_data::from_png_bytes(include_bytes!("../../app.png")).ok().map(|ic| {
+        let logo = eframe::icon_data::from_png_bytes(include_bytes!("../../../app.png")).ok().map(|ic| {
             let img = egui::ColorImage::from_rgba_unmultiplied([ic.width as usize, ic.height as usize], &ic.rgba);
             cc.egui_ctx.load_texture("logo", img, egui::TextureOptions::LINEAR)
         });
@@ -2523,7 +2523,7 @@ fn make_tray(ctx: &egui::Context) -> (Option<TrayIcon>, Receiver<TrayIconEvent>,
     let menu = Menu::new();
     let _ = menu.append(&open);
     let _ = menu.append(&quit);
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../app.png"))
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../app.png"))
         .ok()
         .and_then(|ic| tray_icon::Icon::from_rgba(ic.rgba, ic.width, ic.height).ok());
     let mut b = TrayIconBuilder::new().with_tooltip(APP_NAME).with_menu(Box::new(menu)).with_menu_on_left_click(false);
@@ -3572,6 +3572,7 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    vgd::vk_web::install();
     // При входе в Windows: вернуть кнопки в Spotify, если он обновился, — без окна.
     if std::env::args().any(|a| a == "--spotify-repair") {
         if let Some(Err(e)) = vgd::spotify_app::repair(&|_| {}) {
@@ -3614,7 +3615,7 @@ fn main() -> eframe::Result {
         let _ = inbox_tx.send(ipc::Incoming::Add { urls, ticket: None });
     }
     drop(inbox_tx);
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../app.png")).ok();
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../app.png")).ok();
     let saved = Settings::load();
     let size = if saved.win_w >= 560.0 && saved.win_h >= 420.0 { [saved.win_w, saved.win_h] } else { [780.0, 600.0] };
     let mut vp = egui::ViewportBuilder::default()

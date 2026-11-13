@@ -695,7 +695,7 @@ impl Downloader {
                 .map_err(DlError::Failed);
         }
         if kind == "vk" {
-            return crate::vk_web::search(q, 8)
+            return crate::vk::search(q, 8)
                 .map(|v| v.into_iter().map(|h| (h.url, h.title, h.artist, h.duration)).collect())
                 .map_err(DlError::Failed);
         }

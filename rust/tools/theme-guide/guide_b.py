@@ -188,10 +188,10 @@ assert '{{' not in out, out[out.index('{{'):out.index('{{') + 40]
 open(os.path.join(ASSETS, 'КАК СДЕЛАТЬ ТЕМУ.html'), 'w', encoding='utf-8', newline='\n').write(out)
 
 # список файлов для программы
-files = ['    (HTML, include_bytes!("../../assets/theme-guide/КАК СДЕЛАТЬ ТЕМУ.html")),']
+files = ['    (HTML, include_bytes!("../../../assets/theme-guide/КАК СДЕЛАТЬ ТЕМУ.html")),']
 for f in sorted(os.listdir(IMGDIR)):
-    files.append(f'    ("инструкция/{f}", include_bytes!("../../assets/theme-guide/инструкция/{f}")),')
-open(os.path.join(REPO, 'src', 'theme', 'guide_files.rs'), 'w', encoding='utf-8', newline='\n').write(
+    files.append(f'    ("инструкция/{f}", include_bytes!("../../../assets/theme-guide/инструкция/{f}")),')
+open(os.path.join(REPO, 'desktop', 'src', 'theme', 'guide_files.rs'), 'w', encoding='utf-8', newline='\n').write(
     '// Собрано скриптом вместе со скриншотами: файлы инструкции по темам (путь в папке тем, содержимое).\n'
     'pub const FILES: &[(&str, &[u8])] = &[\n' + '\n'.join(files) + '\n];\n')
 total = sum(os.path.getsize(os.path.join(IMGDIR, f)) for f in os.listdir(IMGDIR))

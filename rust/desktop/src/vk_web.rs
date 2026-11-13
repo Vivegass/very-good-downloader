@@ -15,18 +15,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::appinfo::{command, data_dir};
+pub use vgd_core::vk::VkHit;
+use vgd_core::vk::VkBackend;
 
 const AGENT_JS: &str = include_str!("vk_agent.js");
-
-/// Найденный в VK трек: ссылка на звук (HLS), название, исполнитель, длительность, обложка.
-#[derive(Debug, Clone)]
-pub struct VkHit {
-    pub url: String,
-    pub title: String,
-    pub artist: String,
-    pub duration: Option<f64>,
-    pub cover: Option<String>,
-}
 
 fn webview_dir() -> PathBuf {
     data_dir().join("webview2")
@@ -118,6 +110,23 @@ fn start_agent() -> Result<Agent, String> {
             }
         }
     }
+}
+
+/// Поиск в VK для ядра (`vgd_core::vk`): процесс-агент с WebView2.
+pub struct WebView2Agent;
+
+impl VkBackend for WebView2Agent {
+    fn search(&self, q: &str, count: u32) -> Result<Vec<VkHit>, String> {
+        search(q, count)
+    }
+    fn logged_in(&self) -> bool {
+        logged_in()
+    }
+}
+
+/// Подключить поиск VK к ядру. Вызывается при запуске окна и консоли.
+pub fn install() {
+    vgd_core::vk::set_backend(std::sync::Arc::new(WebView2Agent));
 }
 
 /// Поиск треков в VK. Первый вызов запускает фоновый процесс (несколько секунд), дальше — быстро.

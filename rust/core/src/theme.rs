@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::appinfo::data_dir;
 
-pub mod guide;
+
 pub mod m3;
 use m3::M3;
 
