@@ -147,8 +147,8 @@ enum Event {
     Status(String),
     SortPlan(Vec<(PathBuf, PathBuf)>),
     YtdlpVersion(String),
-    /// ссылки из браузера или второго запуска программы
-    External(Vec<String>),
+    /// ссылки из браузера, Spotify или второго запуска программы; «показать окно»
+    External(ipc::Incoming),
     /// установка кнопок в Spotify закончилась: успех / текст ошибки
     SpotifyDone(Result<(), String>),
     /// вход в Яндекс: код и страница (Some) или вход закончился (None)
@@ -239,24 +239,37 @@ struct App {
     topics_edit: Option<Vec<(String, String, String)>>,
     /// главный экран: раскрыт список папок загрузок
     show_folders: bool,
-    /// ссылки из командной строки («Very Good Downloader.exe <ссылка>») — запускаются сразу
-    start_urls: Vec<String>,
+    /// заявки из браузера/Spotify (`POST /add`): номер → карточки; их состояние отдаётся по `/status`
+    tickets: Vec<(u64, Vec<u64>)>,
+    /// запуск в фоне при входе в Windows (запись в реестре)
+    autostart: bool,
+    /// запущено в фоне: окно создано за краем экрана (eframe всё равно показывает его после первого кадра —
+    /// прячем на первых кадрах), при первом показе — поставить по центру
+    offscreen: bool,
+    hide_frames: u8,
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    /// `inbox` — ссылки, принятые портом ещё до создания окна (порт занимает `main`);
+    /// `background` — запуск без окна (`--background`, из расширения или Spotify).
+    fn new(cc: &eframe::CreationContext<'_>, inbox: Receiver<ipc::Incoming>, background: bool) -> Self {
         setup_style(&cc.egui_ctx);
         let (tx, rx) = channel();
         // Масштаб только из настроек: Ctrl+колесо/Ctrl+= в egui отключены, чтобы не путались с сохранённым.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-        // Приём ссылок из расширения браузера, пока окно открыто.
+        // Ссылки из расширения браузера, Spotify и второго запуска — и те, что пришли, пока окно создавалось.
         {
             let tx = tx.clone();
             let ctx = cc.egui_ctx.clone();
-            ipc::serve(move |urls| {
-                let _ = tx.send(Event::External(urls));
-                ctx.request_repaint();
+            std::thread::spawn(move || {
+                for m in inbox {
+                    let _ = tx.send(Event::External(m));
+                    ctx.request_repaint();
+                }
             });
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            vgd::appinfo::fix_autostart(&exe);
         }
         let s = Settings::load();
         cc.egui_ctx.set_zoom_factor(s.ui_scale.clamp(0.5, 3.0));
@@ -285,6 +298,9 @@ impl App {
             });
         }
         let tray = make_tray(&cc.egui_ctx);
+        // Без значка в трее спрятанное окно было бы не открыть — тогда показываем.
+        let start_hidden = background && tray.0.is_some();
+
         // «--page=settings» / «--page=log» — открыть сразу нужную страницу.
         // «--page=extension» — из установщика: настройки с выбором браузера для расширения.
         let page_arg = std::env::args().find_map(|a| a.strip_prefix("--page=").map(String::from));
@@ -334,13 +350,16 @@ impl App {
             menu_rx: tray.2,
             tray_open: tray.3,
             tray_quit: tray.4,
-            hidden: false,
+            hidden: start_hidden,
             pending_zoom: None,
             ext_steps: None,
             ext_wizard,
             topics_edit: None,
             show_folders: false,
-            start_urls: ipc::launch_urls(std::env::args().skip(1)),
+            tickets: Vec::new(),
+            autostart: vgd::appinfo::autostart(),
+            offscreen: background,
+            hide_frames: 0,
         }
     }
 
@@ -767,6 +786,11 @@ impl App {
                             let dir = Path::new(&files[0]).parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(&self.s.out_dir));
                             vgd::appinfo::toast("Скачано", &format!("{title} · файлов: {}", files.len()), &dir);
                         }
+                        // Окно спрятано — без уведомления об ошибке никто бы не узнал, что не скачалось.
+                        if self.s.notify_done && st == State::Error && self.hidden {
+                            let err = self.jobs.iter().find(|j| j.id == id).map(|j| j.error.clone()).unwrap_or_default();
+                            vgd::appinfo::toast("Не скачалось", &format!("{title} · {err}"), Path::new(&self.s.out_dir));
+                        }
                     }
                 }
                 Event::Idle => {
@@ -816,14 +840,21 @@ impl App {
                     self.side_task = false;
                     self.ytdlp = v;
                 }
-                Event::External(urls) => {
-                    // Показать окно поверх остальных и сразу начать загрузку.
-                    self.show_window(ctx);
+                Event::External(ipc::Incoming::Show) => self.show_window(ctx),
+                // Ссылки из браузера / Spotify: сразу в очередь, окно не показываем (спрятано — остаётся
+                // в трее, открыто — карточка просто появляется в списке). Об окончании скажет уведомление.
+                Event::External(ipc::Incoming::Add { urls, ticket }) => {
                     if !urls.is_empty() {
                         let n = urls.len();
-                        self.urls = urls.join("
-");
-                        self.add_and_start(ctx);
+                        let first = self.next_id;
+                        let opts = self.next_opts.clone();
+                        for url in urls {
+                            self.enqueue(url, opts.clone(), None);
+                        }
+                        if let Some(t) = ticket {
+                            self.tickets.push((t, (first..self.next_id).collect()));
+                        }
+                        self.start_worker(ctx);
                         self.add_log(format!("Из браузера: ссылок {n}"));
                     }
                 }
@@ -839,6 +870,36 @@ impl App {
                 }
             }
         }
+        self.update_tickets();
+    }
+
+    /// Состояние заявок из браузера/Spotify для `GET /status`: пока что-то ждёт или качается — `queued`/`running`,
+    /// потом `done` (что-то скачалось) или `error`. Законченные заявки больше не пересчитываем.
+    fn update_tickets(&mut self) {
+        if self.tickets.is_empty() {
+            return;
+        }
+        let jobs = &self.jobs;
+        self.tickets.retain(|(t, ids)| {
+            let mine: Vec<&Job> = jobs.iter().filter(|j| ids.contains(&j.id)).collect();
+            if mine.iter().any(|j| j.state == State::Running) {
+                let p = mine.iter().find(|j| j.state == State::Running).map(|j| j.percent).unwrap_or(0.0);
+                ipc::set_ticket(*t, "running", &format!("{p:.0}%"));
+                return true;
+            }
+            if mine.iter().any(|j| matches!(j.state, State::Queued | State::Paused)) {
+                ipc::set_ticket(*t, "queued", "");
+                return true;
+            }
+            let files: usize = mine.iter().map(|j| j.files.len()).sum();
+            match mine.iter().find(|j| j.state == State::Error) {
+                Some(j) if files == 0 => ipc::set_ticket(*t, "error", &j.error),
+                _ if mine.iter().all(|j| j.state == State::Cancelled) => ipc::set_ticket(*t, "error", "отменено"),
+                _ if files == 0 => ipc::set_ticket(*t, "done", "уже было скачано раньше"),
+                _ => ipc::set_ticket(*t, "done", &format!("файлов: {files}")),
+            }
+            false
+        });
     }
 
     // ---------- боковая панель ----------
@@ -1473,6 +1534,14 @@ impl App {
                     divider(ui);
                     row(ui, "закрывать в трей", "крестик прячет окно в значок у часов — программа и загрузки продолжают работать, кнопки в браузере и spotify отправляют ссылки сразу. щелчок по значку — открыть окно, правая кнопка — «выход». кнопка «свернуть» сворачивает на панель задач как обычно.", |ui| {
                         toggle(ui, &mut self.s.tray);
+                    });
+                    divider(ui);
+                    row(ui, "запускать при входе в windows", "программа тихо стартует в трее, без окна, — кнопки «скачать» в браузере и spotify срабатывают сразу, а о скачанном скажет уведомление. окно — щелчком по значку у часов.", |ui| {
+                        if toggle(ui, &mut self.autostart) {
+                            if let Ok(exe) = std::env::current_exe() {
+                                vgd::appinfo::set_autostart(self.autostart, &exe);
+                            }
+                        }
                     });
                     divider(ui);
                     row(ui, "масштаб", "размер всего интерфейса. запоминается вместе с размером окна.", |ui| {
@@ -2117,6 +2186,30 @@ impl eframe::App for App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+        // Запуск в фоне: eframe показывает окно после первого кадра — прячем обратно.
+        if self.hidden && self.hide_frames < 4 {
+            self.hide_frames += 1;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.request_repaint();
+        }
+        // Окно впервые показывается после запуска в фоне — с края экрана в центр.
+        if self.offscreen && !self.hidden {
+            self.offscreen = false;
+            let (monitor, rect) = ctx.input(|i| (i.viewport().monitor_size, i.viewport().outer_rect));
+            if let (Some(m), Some(r)) = (monitor, rect) {
+                let pos = egui::pos2(((m.x - r.width()) / 2.0).max(0.0), ((m.y - r.height()) / 2.0).max(0.0));
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(120.0, 80.0)));
+            }
+        }
+        // Подписки — и при запуске в фоне, когда окно ещё не показано.
+        if !self.subs_started {
+            self.subs_started = true;
+            if self.s.subs_on_start && !self.s.subscriptions.is_empty() {
+                self.check_subs(None);
+            }
+        }
         if self.hidden {
             self.handle_events(ctx);
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
@@ -2128,17 +2221,7 @@ impl eframe::App for App {
         if let Some(z) = self.pending_zoom.take() {
             ctx.set_zoom_factor(z.clamp(0.5, 3.0));
         }
-        if !self.start_urls.is_empty() {
-            self.urls = std::mem::take(&mut self.start_urls).join("\n");
-            self.add_and_start(&ctx);
-        }
         self.handle_events(&ctx);
-        if !self.subs_started {
-            self.subs_started = true;
-            if self.s.subs_on_start && !self.s.subscriptions.is_empty() {
-                self.check_subs(None);
-            }
-        }
         if self.s.clipboard_watch {
             let now = ctx.input(|i| i.time);
             if now - self.clip_at > 1.0 {
@@ -2922,22 +3005,58 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
-    let urls = ipc::launch_urls(std::env::args().skip(1));
-    if ipc::forward(&urls) {
-        return Ok(());
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let urls = ipc::launch_urls(args.iter().cloned());
+    // Запуск в фоне: при входе в Windows (`--background`) или из расширения/Spotify (`vgd://…`) — без окна.
+    let background = args.iter().any(|a| a == "--background" || a.to_ascii_lowercase().starts_with("vgd:"));
+    // Одна копия программы. Вторая отдаёт ссылки первой (или просит показать окно) и выходит.
+    // Первая могла только что стартовать и ещё не занять порт, или как раз закрываться — пробуем ~5 с.
+    if !ipc::single_instance() {
+        let mut primary = false;
+        for _ in 0..50 {
+            if ipc::forward(&urls, !background) {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if ipc::single_instance() {
+                primary = true;
+                break;
+            }
+        }
+        if !primary {
+            return Ok(()); // первая копия есть, но не отвечает — вторую не открываем
+        }
     }
+    // Порт — сразу, до окна: расширение и Spotify получают ответ через доли секунды после запуска,
+    // а ссылки ждут в канале, пока окно создаётся.
+    let (inbox_tx, inbox) = channel();
+    {
+        let tx = Mutex::new(inbox_tx.clone());
+        ipc::serve(move |m| {
+            let _ = tx.lock().map(|t| t.send(m));
+        });
+    }
+    if !urls.is_empty() {
+        let _ = inbox_tx.send(ipc::Incoming::Add { urls, ticket: None });
+    }
+    drop(inbox_tx);
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../app.png")).ok();
     let saved = Settings::load();
     let size = if saved.win_w >= 560.0 && saved.win_h >= 420.0 { [saved.win_w, saved.win_h] } else { [780.0, 600.0] };
     let mut vp = egui::ViewportBuilder::default()
         .with_title(APP_NAME)
         .with_inner_size(size)
-        .with_min_inner_size([560.0, 420.0]);
+        .with_min_inner_size([560.0, 420.0])
+        .with_visible(!background);
+    if background {
+        // eframe показывает окно после первого кадра; за краем экрана этого не видно — потом прячем.
+        vp = vp.with_position([-32000.0, -32000.0]);
+    }
     if let Some(icon) = icon {
         vp = vp.with_icon(Arc::new(icon));
     }
     let options = eframe::NativeOptions { viewport: vp, ..Default::default() };
-    eframe::run_native(APP_NAME, options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native(APP_NAME, options, Box::new(move |cc| Ok(Box::new(App::new(cc, inbox, background)))))
 }
 
 trait IfEmptyStr {

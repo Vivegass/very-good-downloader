@@ -1,6 +1,7 @@
 // Very Good Downloader: передаёт ссылку в программу.
 // 1) Окно открыто — POST на 127.0.0.1:38517, загрузка начинается сразу.
-// 2) Окно закрыто — открываем ссылку vgd://add?url=…, Windows запускает программу.
+// 2) Программа закрыта — открываем ссылку vgd://add?url=…, Windows запускает её в фоне (без окна).
+// Программа отвечает номером заявки; по нему страница узнаёт «скачано» (GET /status?t=…).
 
 const APP = "http://127.0.0.1:38517";
 
@@ -26,10 +27,6 @@ function cleanUrl(raw) {
   }
 }
 
-async function sendToApp(url) {
-  return post({ url });
-}
-
 async function post(payload) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 3000);
@@ -48,13 +45,43 @@ async function post(payload) {
   }
 }
 
+/** Отправить; ответ программы ({ok, added, ticket}) или null. */
+async function postJson(payload) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 3000);
+  try {
+    const r = await fetch(APP + "/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-VGD": "1" },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    return r.ok ? await r.json().catch(() => ({ ok: true })) : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Состояние заявки: queued / running / done / error / unknown; null — программа не отвечает. */
+async function ticketStatus(ticket) {
+  try {
+    const r = await fetch(APP + "/status?t=" + encodeURIComponent(ticket), { headers: { "X-VGD": "1" } });
+    return r.ok ? await r.json() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Отправить ссылку; если программа не отвечает — запустить её через vgd://. */
 async function download(rawUrl, tabId) {
   const url = cleanUrl(rawUrl);
   if (!/^https?:\/\//i.test(url)) return { ok: false, error: "это не ссылка на страницу" };
-  if (await sendToApp(url)) {
+  const res = await postJson({ url });
+  if (res) {
     flash(tabId, "✓", "#2e7d32");
-    return { ok: true, via: "app" };
+    return { ok: true, via: "app", ticket: res.ticket };
   }
   // Окно закрыто: открываем свою вкладку, она запускает программу через vgd:// и сама закрывается.
   await chrome.tabs.create({ url: chrome.runtime.getURL("launch.html?u=" + encodeURIComponent(url)) });
@@ -99,7 +126,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
 async function sendTracks(msg) {
   const payload = { name: msg.name, service: msg.service || "VK", tracks: msg.tracks, diag: msg.diag };
-  if (await post(payload)) return { ok: true, via: "app" };
+  const res = await postJson(payload);
+  if (res) return { ok: true, via: "app", ticket: res.ticket };
   // Список длинный для ссылки vgd:// — запускаем программу пустой и отправляем список, когда она ответит.
   await chrome.storage.session.set({ pending: payload });
   await chrome.tabs.create({ url: chrome.runtime.getURL("launch.html?u=") });
@@ -112,6 +140,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type === "vgd-download") {
     download(msg.url, sender.tab && sender.tab.id).then(reply);
     return true; // ответ придёт асинхронно
+  }
+  // Страница спрашивает, скачалось ли (common.js → watch).
+  if (msg.type === "vgd-status") {
+    ticketStatus(msg.ticket).then((s) => reply(s || { state: "offline" }));
+    return true;
   }
   // Сохранить файл (обложку) в «Загрузки» браузера.
   if (msg.type === "vgd-save-file") {

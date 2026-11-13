@@ -5,7 +5,8 @@
 //
 // Расширение Spicetify. Список треков собирается внутри клиента (GraphQL / Platform API), поэтому
 // ограничения «первые 100 треков» нет. Связь с программой — http://127.0.0.1:38517 (как у расширения
-// браузера); если программа закрыта — запускаем её ссылкой vgd:// и ждём.
+// браузера); если программа закрыта — запускаем её ссылкой vgd:// (в фоне, без окна) и ждём ответа порта.
+// Итог («скачано» / ошибка) узнаём по GET /status?t=<номер заявки>.
 
 (async function vgd() {
   // Расширение может загрузиться дважды (поставлено и программой, и из Marketplace, или записано в
@@ -71,34 +72,76 @@
     }
   }
 
-  /** Программа закрыта — запускаем её через протокол vgd:// и ждём до 20 с. */
+  /** Программа закрыта — запускаем её через протокол vgd:// (она стартует в фоне, без окна)
+   *  и ждём, пока ответит порт: обычно это доли секунды, ждём не больше 12 с. */
   async function launch() {
-    say("Открываю Very Good Downloader…");
-    try {
+    say("Запускаю Very Good Downloader в фоне…");
+    const open = (fn) => {
+      try {
+        fn();
+      } catch {}
+    };
+    // Какой способ сработает в клиенте Spotify, зависит от версии — пробуем все (вторая копия программы
+    // не откроется: лишние запуски просто отдают ссылки первой и выходят).
+    open(() => {
+      const a = document.createElement("a");
+      a.href = "vgd://add";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => a.remove(), 1000);
+    });
+    open(() => {
       const f = document.createElement("iframe");
       f.style.display = "none";
       f.src = "vgd://add";
       document.body.appendChild(f);
       setTimeout(() => f.remove(), 5000);
-    } catch {}
-    try {
-      window.open("vgd://add");
-    } catch {}
+    });
+    open(() => window.open("vgd://add"));
     for (let i = 0; i < 40; i++) {
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 300));
       if (await alive()) return true;
     }
     return false;
   }
 
+  async function status(ticket) {
+    try {
+      const r = await fetch(APP + "/status?t=" + ticket, { headers: { "X-VGD": "1" } });
+      return r.ok ? await r.json() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Следим за заявкой, пока не скачается (до 3 часов), и сообщаем итог. */
+  async function watch(ticket, what) {
+    const end = Date.now() + 3 * 3600 * 1000;
+    let misses = 0;
+    while (Date.now() < end) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const s = await status(ticket);
+      if (!s || s.state === "unknown") {
+        // Программу закрыли — молча перестаём следить.
+        if (++misses >= 5) return;
+        continue;
+      }
+      misses = 0;
+      if (s.state === "done") return say(what + " — скачано ✓" + (s.text ? " (" + s.text + ")" : ""));
+      if (s.state === "error") return say(what + " — не скачалось: " + (s.text || "ошибка"), true);
+    }
+  }
+
   async function send(body, what) {
     try {
       if (!(await alive()) && !(await launch())) {
-        say("Very Good Downloader не запущен — откройте программу и нажмите ещё раз", true);
+        say("Very Good Downloader не запустился — откройте программу и нажмите ещё раз", true);
         return;
       }
-      await post(body);
-      say(what + " — в очереди Very Good Downloader ✓");
+      const r = await post(body);
+      say(what + " — в очереди Very Good Downloader");
+      if (r?.ticket) watch(r.ticket, what);
     } catch (e) {
       say("Не удалось отправить в программу: " + (e?.message || e), true);
     }

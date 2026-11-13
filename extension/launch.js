@@ -1,5 +1,6 @@
-// Запуск программы, когда её окно закрыто: открываем vgd://add?url=… из страницы расширения
-// (из фоновой части браузер внешние протоколы не открывает), ждём, пока программа ответит, и закрываемся.
+// Запуск программы, когда она закрыта: открываем vgd://add?url=… из страницы расширения
+// (из фоновой части браузер внешние протоколы не открывает). Программа стартует в фоне, без окна,
+// и сразу занимает порт — ждём ответа (обычно доли секунды) и закрываемся.
 
 const url = new URLSearchParams(location.search).get("u") || "";
 const launch = url ? "vgd://add?url=" + encodeURIComponent(url) : "vgd://add";
@@ -26,10 +27,10 @@ const timer = setInterval(async () => {
     clearInterval(timer);
     // Если ждал список треков (VK) — background отправит его сейчас.
     await new Promise((r) => chrome.runtime.sendMessage({ type: "vgd-app-up" }, () => r()));
-    document.getElementById("msg").textContent = "готово — ссылка в программе ✓";
+    document.getElementById("msg").textContent = "готово — ссылка в очереди, о скачанном скажет уведомление windows ✓";
     document.getElementById("hint").textContent = "";
-    setTimeout(() => window.close(), 800);
-  } else if (tries === 40) {
+    setTimeout(() => window.close(), 400);
+  } else if (tries === 50) {
     clearInterval(timer);
     document.getElementById("msg").textContent = "программа не запустилась";
     const hint = document.getElementById("hint");
@@ -39,4 +40,4 @@ const timer = setInterval(async () => {
     again.textContent = "повторить";
     hint.appendChild(again);
   }
-}, 500);
+}, 300);

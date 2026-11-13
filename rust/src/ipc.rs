@@ -5,6 +5,11 @@
 //! * Если окно не запущено, расширение открывает ссылку `vgd://add?url=…`: Windows запускает
 //!   программу (протокол `vgd` регистрируется в HKCU при каждом запуске окна и установщиком).
 //! * Второй запуск программы не открывает второе окно, а передаёт ссылки первому.
+//!   Первый узнаётся по именованному мьютексу Windows (`single_instance`), который ставится
+//!   в самом начале `main`, а порт занимается сразу за ним — ещё до создания окна egui.
+//!   Ссылки, пришедшие до появления окна, ждут в канале (`Incoming`).
+//! * `POST /add` отвечает номером заявки (`ticket`); по `GET /status?t=N` расширение и Spotify
+//!   узнают, что с ней: `queued` → `running` → `done` / `error`.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -20,6 +25,77 @@ static EXTENSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None)
 
 pub fn extension_version() -> Option<String> {
     EXTENSION.lock().ok().and_then(|v| v.clone())
+}
+
+/// Что пришло извне: ссылки (с номером заявки, если пришли по сети) или «покажи окно».
+#[derive(Debug, Clone, PartialEq)]
+pub enum Incoming {
+    Add { urls: Vec<String>, ticket: Option<u64> },
+    Show,
+}
+
+/// Заявки `POST /add`: номер → (состояние, пояснение). Последние 300.
+static TICKETS: std::sync::Mutex<Vec<(u64, &'static str, String)>> = std::sync::Mutex::new(Vec::new());
+static NEXT_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn new_ticket() -> u64 {
+    let t = NEXT_TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    set_ticket(t, "queued", "");
+    t
+}
+
+/// Обновить состояние заявки: `queued`, `running`, `done`, `error`.
+pub fn set_ticket(t: u64, state: &'static str, text: &str) {
+    let Ok(mut v) = TICKETS.lock() else { return };
+    let text: String = text.chars().take(200).collect();
+    match v.iter_mut().find(|e| e.0 == t) {
+        Some(e) => {
+            e.1 = state;
+            e.2 = text;
+        }
+        None => {
+            v.push((t, state, text));
+            if v.len() > 300 {
+                v.remove(0);
+            }
+        }
+    }
+}
+
+fn ticket(t: u64) -> Option<(&'static str, String)> {
+    TICKETS.lock().ok()?.iter().find(|e| e.0 == t).map(|e| (e.1, e.2.clone()))
+}
+
+/// Именованный мьютекс Windows: `true` — мы первая копия программы (мьютекс наш до выхода),
+/// `false` — уже запущена другая. Повторный вызов из второй копии пробует снова
+/// (первая могла как раз закрыться).
+#[cfg(windows)]
+pub fn single_instance() -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateMutexW(attrs: *const std::ffi::c_void, owner: i32, name: *const u16) -> *mut std::ffi::c_void;
+        fn GetLastError() -> u32;
+        fn CloseHandle(h: *mut std::ffi::c_void) -> i32;
+    }
+    const ERROR_ALREADY_EXISTS: u32 = 183;
+    let name: Vec<u16> = r"Local\VeryGoodDownloader.SingleInstance".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let h = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+        if h.is_null() {
+            return true; // не смогли проверить — работаем как раньше
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            CloseHandle(h);
+            return false;
+        }
+        // Ручку не закрываем: мьютекс живёт, пока жива программа.
+        true
+    }
+}
+
+#[cfg(not(windows))]
+pub fn single_instance() -> bool {
+    true
 }
 
 fn addr() -> SocketAddr {
@@ -76,13 +152,15 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Передать ссылки уже запущенному окну. `true` — окно есть и всё приняло (тогда второму выходить).
-pub fn forward(urls: &[String]) -> bool {
+/// Передать ссылки уже запущенной программе; без ссылок — попросить показать окно (`show`)
+/// или ничего (запуск в фоне). `true` — программа есть и всё приняла (тогда второму выходить).
+pub fn forward(urls: &[String], show: bool) -> bool {
     let Ok(mut s) = TcpStream::connect_timeout(&addr(), Duration::from_millis(400)) else { return false };
     let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
+    let path = if urls.is_empty() && show { "/show" } else { "/add" };
     let body = serde_json::json!({ "urls": urls }).to_string();
     let req = format!(
-        "POST /add HTTP/1.1\r\nHost: 127.0.0.1\r\nX-VGD: 1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-VGD: 1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     if s.write_all(req.as_bytes()).is_err() {
@@ -94,7 +172,7 @@ pub fn forward(urls: &[String]) -> bool {
 }
 
 /// Запустить приём ссылок. `false` — порт занят (например, окно уже открыто).
-pub fn serve(on_urls: impl Fn(Vec<String>) + Send + Sync + 'static) -> bool {
+pub fn serve(on_urls: impl Fn(Incoming) + Send + Sync + 'static) -> bool {
     let Ok(listener) = TcpListener::bind(addr()) else { return false };
     let on_urls = std::sync::Arc::new(on_urls);
     std::thread::spawn(move || {
@@ -195,7 +273,7 @@ fn allowed(req: &Request) -> bool {
     }
 }
 
-fn handle(mut conn: TcpStream, on_urls: &dyn Fn(Vec<String>)) -> Option<()> {
+fn handle(mut conn: TcpStream, on_urls: &dyn Fn(Incoming)) -> Option<()> {
     let req = read_request(&mut conn)?;
     let path = req.path.split('?').next().unwrap_or("");
     let cors = (req.header("origin") == Some(SPOTIFY_ORIGIN)).then_some(SPOTIFY_ORIGIN);
@@ -206,6 +284,18 @@ fn handle(mut conn: TcpStream, on_urls: &dyn Fn(Vec<String>)) -> Option<()> {
         }
         ("GET", "/ping") if allowed(&req) => {
             respond_to(&mut conn, cors, "200 OK", &format!("{{\"app\":\"vgd\",\"version\":\"{APP_VERSION}\"}}"));
+        }
+        ("GET", "/status") if allowed(&req) => {
+            let t: u64 = req.path.split_once("t=").and_then(|(_, v)| v.split('&').next()?.parse().ok()).unwrap_or(0);
+            let body = match ticket(t) {
+                Some((state, text)) => serde_json::json!({ "state": state, "text": text }).to_string(),
+                None => "{\"state\":\"unknown\",\"text\":\"\"}".to_string(),
+            };
+            respond_to(&mut conn, cors, "200 OK", &body);
+        }
+        ("POST", "/show") if allowed(&req) => {
+            on_urls(Incoming::Show);
+            respond_to(&mut conn, cors, "200 OK", "{\"ok\":true}");
         }
         ("POST", "/hello") if allowed(&req) => {
             let v: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
@@ -233,8 +323,13 @@ fn handle(mut conn: TcpStream, on_urls: &dyn Fn(Vec<String>)) -> Option<()> {
                 }
             }
             let n = urls.len();
-            on_urls(urls); // пустой список — просто показать окно
-            respond_to(&mut conn, cors, "200 OK", &format!("{{\"ok\":true,\"added\":{n}}}"));
+            if n == 0 {
+                respond_to(&mut conn, cors, "200 OK", "{\"ok\":true,\"added\":0}");
+            } else {
+                let t = new_ticket();
+                on_urls(Incoming::Add { urls, ticket: Some(t) });
+                respond_to(&mut conn, cors, "200 OK", &format!("{{\"ok\":true,\"added\":{n},\"ticket\":{t}}}"));
+            }
         }
         _ => respond_to(&mut conn, cors, "403 Forbidden", "{\"ok\":false}"),
     }
@@ -326,5 +421,40 @@ mod tests {
         assert!(post.starts_with("HTTP/1.1 200") && post.contains(&format!("Access-Control-Allow-Origin: {SPOTIFY_ORIGIN}")), "{post}");
         let evil = ask("OPTIONS /add HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n".into());
         assert!(evil.starts_with("HTTP/1.1 403") && !evil.contains("Allow-Origin"), "{evil}");
+    }
+
+    /// `POST /add` даёт номер заявки, `GET /status` отдаёт её состояние; `/show` — просьба показать окно.
+    #[test]
+    fn tickets_and_show() {
+        let ask = |req: String| -> (String, Vec<Incoming>) {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let a = l.local_addr().unwrap();
+            let t = std::thread::spawn(move || {
+                let (c, _) = l.accept().unwrap();
+                let got = std::sync::Mutex::new(Vec::new());
+                let _ = handle(c, &|m| got.lock().unwrap().push(m));
+                got.into_inner().unwrap()
+            });
+            let mut s = TcpStream::connect(a).unwrap();
+            s.write_all(req.as_bytes()).unwrap();
+            let mut out = String::new();
+            let _ = s.read_to_string(&mut out);
+            (out, t.join().unwrap())
+        };
+        let body = r#"{"url":"https://vimeo.com/1"}"#;
+        let (out, got) = ask(format!("POST /add HTTP/1.1\r\nX-VGD: 1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+        let v: serde_json::Value = serde_json::from_str(out.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let t = v["ticket"].as_u64().expect("номер заявки");
+        assert_eq!(got, vec![Incoming::Add { urls: vec!["https://vimeo.com/1".into()], ticket: Some(t) }]);
+        let (st, _) = ask(format!("GET /status?t={t} HTTP/1.1\r\nX-VGD: 1\r\n\r\n"));
+        assert!(st.contains(r#""state":"queued""#), "{st}");
+        set_ticket(t, "done", "файлов: 1");
+        let (st, _) = ask(format!("GET /status?t={t} HTTP/1.1\r\nX-VGD: 1\r\n\r\n"));
+        assert!(st.contains(r#""state":"done""#), "{st}");
+        let (_, got) = ask("POST /show HTTP/1.1\r\nX-VGD: 1\r\nContent-Length: 0\r\n\r\n".into());
+        assert_eq!(got, vec![Incoming::Show]);
+        // Без заголовка X-VGD (обычная страница) — отказ.
+        let (out, got) = ask("POST /show HTTP/1.1\r\nContent-Length: 0\r\n\r\n".into());
+        assert!(out.starts_with("HTTP/1.1 403") && got.is_empty());
     }
 }

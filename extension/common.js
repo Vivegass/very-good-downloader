@@ -45,13 +45,38 @@ const VGD = (() => {
     toastTimer = setTimeout(() => toastEl.classList.remove("vgd-show"), kind === "wait" ? 15000 : 3500);
   }
 
+  /** Следить за заявкой в программе и сказать, когда скачалось (пока вкладка открыта, до 3 часов). */
+  function watch(ticket, what) {
+    const end = Date.now() + 3 * 3600 * 1000;
+    let misses = 0;
+    const tick = () => {
+      if (Date.now() > end) return;
+      try {
+        chrome.runtime.sendMessage({ type: "vgd-status", ticket }, (s) => {
+          if (chrome.runtime.lastError || !s || s.state === "offline" || s.state === "unknown") {
+            if (++misses < 5) setTimeout(tick, 3000);
+            return;
+          }
+          misses = 0;
+          if (s.state === "done") toast(what + " — скачано ✓" + (s.text ? " (" + s.text + ")" : ""), "ok");
+          else if (s.state === "error") toast(what + " — не скачалось: " + (s.text || "ошибка"), "err");
+          else setTimeout(tick, 3000);
+        });
+      } catch {
+        // расширение перезагрузили — вкладка о нём больше не знает
+      }
+    };
+    setTimeout(tick, 3000);
+  }
+
   function result(res, what) {
     if (chrome.runtime.lastError || !res || !res.ok) {
       toast("не удалось отправить в программу", "err");
     } else if (res.via === "app") {
-      toast(what + " — в очереди Very Good Downloader ✓", "ok");
+      toast(what + " — в очереди Very Good Downloader", "ok");
+      if (res.ticket) watch(res.ticket, what);
     } else {
-      toast("открываю Very Good Downloader…", "wait");
+      toast("запускаю Very Good Downloader в фоне…", "wait");
     }
   }
 
