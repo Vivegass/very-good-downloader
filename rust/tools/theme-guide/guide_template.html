@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как сделать тему — Very Good Downloader</title>
+<style>
+  :root { --bg: #f6f6f4; --card: #fff; --text: #1a1a1a; --muted: #5c5c5c; --line: #e2e1dd; --code: #f0efec; --accent: #3b6cf0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0b0b0b; --card: #151515; --text: #e8e8e8; --muted: #9a9a9a; --line: #2a2a2a; --code: #1d1d1d; --accent: #8fb0ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 22px; margin: 48px 0 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+  h3 { font-size: 17px; margin: 0 0 6px; }
+  a { color: var(--accent); }
+  .lead { color: var(--muted); font-size: 16px; margin: 0 0 20px; }
+  nav.toc { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 20px; columns: 2; }
+  nav.toc a { display: block; text-decoration: none; padding: 2px 0; }
+  code, pre { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 10px; overflow-x: auto; margin: 8px 0; }
+  pre code { background: none; padding: 0; }
+  .note { background: var(--card); border-left: 4px solid var(--accent); padding: 10px 16px; border-radius: 8px; margin: 12px 0; }
+  .param { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin: 14px 0; }
+  .param p { margin: 6px 0; }
+  .figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-top: 10px; }
+  figure { margin: 0; }
+  figure img { width: 100%; height: auto; display: block; border-radius: 8px; border: 1px solid var(--line); }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .big img { max-width: 900px; }
+  table { border-collapse: collapse; width: 100%; background: var(--card); border-radius: 12px; overflow: hidden; }
+  td, th { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .sw { display: inline-block; width: 22px; height: 16px; border-radius: 4px; border: 1px solid #0003; vertical-align: middle; }
+  ol li, ul li { margin: 4px 0; }
+  .steps { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 700px) { .steps, nav.toc { grid-template-columns: 1fr; columns: 1; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Как сделать свою тему</h1>
+<p class="lead">Very Good Downloader · темы оформления: цвета, скругление, шрифт, значки и раскладка окна. Все картинки ниже — настоящие скриншоты программы.</p>
+
+<nav class="toc">
+  <a href="#start">1. С чего начать</a>
+  <a href="#file">2. Как устроен файл темы</a>
+  <a href="#colors">3. Цвета — где какой</a>
+  <a href="#params">4. Форма и раскладка — все параметры</a>
+  <a href="#recipes">5. Рецепты: от нуля до неузнаваемой темы</a>
+  <a href="#m3">6. Тема из одного цвета (Material 3)</a>
+  <a href="#share">7. Как поделиться темой</a>
+  <a href="#errors">8. Частые ошибки и как вернуть тёмную</a>
+</nav>
+
+<h2 id="start">1. С чего начать</h2>
+<ol>
+  <li>Откройте <b>настройки → оформление</b>. Выберите тему, на основе которой хотите сделать свою (например, «тёмная»).</li>
+  <li>Нажмите <b>«создать»</b>. Появится копия — своя тема, и она сразу выбрана. В папке тем появится её файл <code>.json</code>.</li>
+  <li>Цвета, скругление, шрифт и значки можно менять прямо в программе: щелчок по квадратику цвета открывает пипетку, всё видно сразу.</li>
+  <li>Раскладка и форма (навигация сверху или снизу, вид карточек и кнопок, фон-градиент, размер шрифта…) меняются только в файле темы.
+      Нажмите <b>«папка тем»</b> и откройте файл своей темы в Блокноте (правой кнопкой → «Открыть с помощью» → «Блокнот»).</li>
+  <li>Сохраните файл (Ctrl+S) — <b>окно обновится само примерно через секунду</b>, если эта тема выбрана. Перезапускать программу не нужно.</li>
+</ol>
+<div class="note">Папка тем: <code>%APPDATA%\VeryGoodDownloader\themes\</code> (вставьте эту строку в адресную строку Проводника).
+Одна тема — один файл <code>.json</code>. Новые файлы появляются в списке тем, когда вы его открываете.
+Там же лежит <code>_пример — все поля.json</code> — тема со всеми полями и пояснением к каждому, и эта инструкция.</div>
+
+<h2 id="file">2. Как устроен файл темы</h2>
+<p>Файл темы — текст в формате JSON: пары <code>"поле": значение</code> через запятую внутри фигурных скобок. Достаточно указать только то, что меняете — <b>всё остальное берётся из тёмной темы</b>. Самая маленькая тема:</p>
+<pre><code>{
+  "name": "моя",
+  "accent": "#ff8a5c"
+}</code></pre>
+<ul>
+  <li>Цвета — <code>"#rrggbb"</code> (можно коротко <code>"#f80"</code>). Подобрать цвет удобно пипеткой в программе, а код — в любом «color picker» в интернете.</li>
+  <li>Числа пишутся с точкой: <code>1.5</code>, а не <code>1,5</code>. Да/нет — <code>true</code> / <code>false</code> без кавычек.</li>
+  <li>Можно писать комментарии: <code>// до конца строки</code> и <code>/* … */</code>.</li>
+  <li>Между полями — запятая, после последнего поля запятой нет.</li>
+  <li>Параметры раскладки лежат внутри <code>"layout": { … }</code>.</li>
+</ul>
+<details><summary>Пример со всеми полями и пояснениями (этот же файл лежит в папке тем)</summary>
+<pre><code>{{EXAMPLE}}</code></pre></details>
+
+<h2 id="colors">3. Цвета — где какой</h2>
+<p>Чтобы было видно, какой цвет где используется, каждому цвету здесь дан свой яркий оттенок. Номера на картинках — в таблице.</p>
+<div class="big">{{RAINBOW_LOOK}}</div>
+<p></p>
+<div class="big">{{RAINBOW_DL}}</div>
+<p></p>
+<table>
+  <tr><th>№</th><th></th><th>поле</th><th>где видно</th></tr>
+  {{COLOR_ROWS}}
+</table>
+<p>Цвета без номера на этих двух картинках не видны: они появляются во всплывающих окнах, при наведении, при загрузке или на плашках-подсказках.</p>
+<div class="note">Совет: делайте <code>text</code> контрастным к <code>bg</code> и <code>surface</code>, а <code>on_accent</code> — к <code>accent</code>. Если тема светлая (фон светлее середины), программа сама переключает служебные элементы (полосы прокрутки, тени) на светлый вид.</div>
+
+<h2 id="params">4. Форма и раскладка — все параметры</h2>
+<p>Первые три параметра стоят в файле сразу (как <code>"radius"</code>), остальные — внутри <code>"layout": { … }</code>. Под каждым — скриншоты «до» (тёмная тема) и «после» (изменён только этот параметр).</p>
+{{PARAMS}}
+
+<h2 id="recipes">5. Рецепты: от нуля до неузнаваемой темы</h2>
+
+<h3>Рецепт А: «ночной неон» — навигация сверху, градиент, рамки со свечением</h3>
+<div class="steps">
+  <div><p><b>Шаг 1.</b> «создать» на основе тёмной, затем в программе пипеткой (или в файле) — тёмно-фиолетовые <code>bg</code>, <code>sidebar</code>, <code>surface</code> и бирюзовый <code>accent</code> <code>"#00e0ff"</code>.</p></div>
+  {{A1}}
+  <div><p><b>Шаг 2.</b> В файле темы добавьте раздел:</p><pre><code>{{A2CODE}}</code></pre></div>
+  {{A2}}
+  <div><p><b>Шаг 3.</b> Дополните раздел <code>layout</code>:</p><pre><code>{{A3CODE}}</code></pre></div>
+  {{A3}}
+  <div><p>Итог на странице настроек: подписи разделов прописными, жирные заголовки, контурные кнопки.</p></div>
+  {{A3L}}
+</div>
+
+<h3>Рецепт Б: «мягкая светлая» — навигация снизу, круглые углы, тени</h3>
+<div class="steps">
+  <div><p><b>Шаг 1.</b> «создать» на основе <b>светлой</b>, шрифт — «segoe ui», <code>accent</code> — розовый <code>"#e0457b"</code>.</p></div>
+  {{B1}}
+  <div><p><b>Шаг 2.</b></p><pre><code>{{B2CODE}}</code></pre></div>
+  {{B2}}
+  <div><p><b>Шаг 3.</b> Тени, плоские кнопки, просторнее и лёгкий градиент:</p><pre><code>{{B3CODE}}</code></pre></div>
+  {{B3}}
+</div>
+
+<h2 id="m3">6. Тема из одного цвета (Material 3)</h2>
+<p>Можно не подбирать 28 цветов вручную: задайте один «seed»-цвет — программа построит по правилам Material Design 3 всю палитру (основной, вторичный, третичный цвета, поверхности, рамки, ошибки) и форму M3: кнопки-«таблетки», навигацию с «таблеткой» вокруг значка, тумблеры M3, шрифт Roboto.</p>
+<pre><code>{
+  "name": "зелёная m3",
+  "m3": { "seed": "#386a20", "dark": true }
+}</code></pre>
+<div class="steps">{{C1}}{{C2}}</div>
+<p>Любое поле, указанное в файле явно (например, <code>"accent"</code> или <code>"layout"</code>), перекрывает выведенное из seed. После сохранения из программы в файле появится <code>"scheme"</code> — все роли Material 3; их можно править вручную.</p>
+
+<h2 id="share">7. Как поделиться темой</h2>
+<ul>
+  <li>Тема — <b>один файл</b>. В программе: выберите свою тему → <b>«экспорт…»</b> → сохраните, например, на рабочий стол и отправьте.</li>
+  <li>Друг нажимает <b>«импорт…»</b> и выбирает файл — тема добавляется в папку тем и сразу включается. Или просто кладёт файл в папку тем.</li>
+  <li>Если в теме есть <b>картинка фона</b> (<code>background_image</code>), отправьте и её PNG-файл: его нужно положить в папку тем рядом с темой, под тем же именем. Без картинки тема всё равно откроется — просто без неё.</li>
+  <li>Шрифты Roboto и Segoe UI берутся из Windows; если Roboto нет — будет Segoe UI.</li>
+</ul>
+
+<h2 id="errors">8. Частые ошибки и как вернуть тёмную</h2>
+<p>Если в файле опечатка, тема не появится в списке, а под списком тем будет написано, в каком файле и в какой строке ошибка:</p>
+<div class="figs">{{ERR}}</div>
+<p>Как читать сообщение: <code>expected `,` or `}` — строка 4, столбец 3</code> — «в строке 4 ожидалась запятая или закрывающая скобка». Обычно ошибка — в конце предыдущей строки.</p>
+<table>
+  <tr><th>что видно</th><th>в чём дело</th></tr>
+  <tr><td><code>expected `,` or `}`</code></td><td>пропущена запятая между полями (в конце предыдущей строки)</td></tr>
+  <tr><td><code>trailing comma</code></td><td>лишняя запятая после последнего поля перед <code>}</code></td></tr>
+  <tr><td><code>цвет «…» — нужно #rrggbb</code></td><td>цвет записан не так: нужно <code>"#1a2b3c"</code> — с решёткой и в кавычках</td></tr>
+  <tr><td><code>key must be a string</code></td><td>имя поля без кавычек: нужно <code>"accent"</code>, а не <code>accent</code></td></tr>
+  <tr><td><code>invalid type: string "1.5", expected f32</code></td><td>число в кавычках: нужно <code>1.5</code> без кавычек</td></tr>
+  <tr><td>тема не меняется</td><td>поле <code>nav</code>, <code>cards</code> и т. п. стоит не внутри <code>"layout": { … }</code>, или в значении опечатка — неизвестные значения заменяются на обычные</td></tr>
+  <tr><td>пропала картинка фона</td><td>файл не в папке тем, не PNG или имя с папкой (<code>"C:\…"</code>) — нужно только имя файла</td></tr>
+</table>
+<div class="note"><b>Как вернуть тёмную:</b> настройки → оформление → тема → «тёмная». Если файл выбранной темы удалили или он сломан при запуске программы — программа сама откроется в тёмной теме. Свои темы при этом никуда не деваются.</div>
+<p style="color:var(--muted);margin-top:40px">Эта инструкция обновляется вместе с программой; ваши файлы тем при этом не трогаются.</p>
+</main>
+</body>
+</html>

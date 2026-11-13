@@ -211,3 +211,62 @@ Inno Setup 6, делает `release\VeryGoodDownloader-Setup-<версия>.exe`
 - Журнал: поиск и Ctrl+F. Уведомления Windows — от имени программы (`HKCU\Software\Classes\AppUserModelId\VeryGoodDownloader.App`).
 - Spotify: `vgd.js` не запускается дважды (`window.__vgdLoaded`); устаревший `vgd.js` в Spotify обновляется при запуске окна.
 - Расширение: значок фиксированного размера; после перезагрузки расширения «осиротевшие» кнопки на открытых вкладках убираются.
+
+## Темы оформления
+
+- `theme.rs` — тема: 28 цветов (`#rrggbb`), `radius` (множитель скругления: 0 — квадратные углы, 1 — как в тёмной),
+  `font` (`mono` / `sans` = Segoe UI), `icons` (`line` = Segoe MDL2 / `symbols` = обычные знаки ↓ ⚙ ☰, крупнее)
+  и `layout` — раскладка и форма, задаётся только в файле:
+  `nav` (`left`/`top`/`bottom`), `nav_labels`, `nav_width` (от 140 — пункты строками), `header` (`logo`/`name`/`none`),
+  `column`, `cards` (`fill`/`outline`/`none`), `shadow` (`none`/`shadow`/`glow`), `density`, `padding`,
+  `buttons` (`pill`/`rect`/`outline`/`flat`), `background` (градиент из 2–3 цветов), `background_image` (PNG из папки тем)
+  + `image_opacity`, `font_scale`, `bold_headings`, `caps` (`lower`/`upper` — подписи разделов).
+- Встроенные: тёмная (по умолчанию, прежний вид), светлая, «закат», «терминал» — меняют цвета и форму;
+  «неон» (навигация сверху, рамки со свечением, градиент, контурные кнопки), «облако» (навигация снизу значками,
+  тени, плоские кнопки, Segoe UI), «бумага» (широкая левая панель, квадратные углы, прописные жирные заголовки).
+- Свои темы — `%APPDATA%\VeryGoodDownloader\themes\*.json`, одна тема = один файл, можно с комментариями `//` и `/* */`.
+  Недостающие поля (и весь `layout`) берутся из тёмной — старые файлы читаются. Кнопка «папка тем» кладёт туда
+  `_пример — все поля.json` (`src/theme_example.json`) с пояснением к каждому полю. Выбранная — `Settings::theme`
+  (`""` — тёмная, `light`/`sunset`/`terminal`/`neon`/`cloud`/`paper`, `file:<имя файла>` — своя).
+- В окне цвета берутся из `pal()` (thread_local), скругления — `rad()`/`btn_rad()`, отступы — `pad()`/`margin()`
+  (растут вместе со скруглением), высоты — `dens()`, значки — `glyph()`. `apply_theme()` применяет тему сразу;
+  шрифты и картинка фона пересобираются, только если сменились.
+- Настройки → «оформление» (`bin/gui/appearance.rs`): выбор темы, «создать» (копия текущей), пример кнопок,
+  пипетка для каждого цвета, ползунок скругления, шрифт и значки, «сохранить» название, удалить, папка тем, импорт/экспорт.
+
+### Material 3 (и перенос на Android)
+
+- Встроенные «material 3» и «material 3 светлая» (`material`, `material-light`) собраны из seed `#6750a4` функцией
+  `theme::from_m3`. Форма задаётся общими параметрами `layout`: `buttons: "tonal"` (главная — filled, обычные — tonal,
+  маленькие — outlined), `button_radius: 100` (full), `field_radius: 4` (ExtraSmall), карточки — скругление 12 (Medium),
+  `nav_indicator: "pill"` (Navigation Rail: «таблетка» вокруг значка, подпись под ней), `nav_width: 80`, `switch: "m3"`,
+  `font: "roboto"` (Roboto Regular, заголовки — Medium; без Roboto — Segoe UI / Semibold).
+- Своя тема на M3 — достаточно `{"name": "…", "m3": {"seed": "#00639b", "dark": false}}`: роли выводятся из seed
+  (`theme/m3.rs`, «tonal spot»: primary — оттенок seed, secondary — C16, tertiary — оттенок +60° C24, neutral C4,
+  neutral variant C8, error — от #b3261e; тона ролей — по спецификации M3). Тон — L* (как в HCT), оттенок и насыщенность —
+  CIELAB LCh вместо CAM16, поэтому цвета близки к Material Theme Builder, но не точь-в-точь (тест: базовая схема в пределах
+  ±28 по каналу). Всё, что задано в файле явно, остаётся как задано.
+- При сохранении в файле появляется `m3.scheme` — все роли с именами полей Compose `ColorScheme` (camelCase:
+  `primary`, `onPrimary`, `primaryContainer`, `surfaceContainerLow`…). Android читает `m3.scheme` и строит
+  `ColorScheme(...)` / `darkColorScheme(...)` напрямую, без своего пересчёта; `m3.dark` — какая из двух.
+- Соответствие полей окна ролям M3 (`from_m3`):
+
+  | поле темы | роль M3 | поле темы | роль M3 |
+  |---|---|---|---|
+  | `bg`, `sidebar`, `sidebar_line` | `surface` | `text`, `text_hover` | `onSurface` |
+  | `surface` (карточки) | `surfaceContainer` | `muted` | `onSurfaceVariant` |
+  | `surface_hi`, `field` | `surfaceContainerHighest` | `faint`, `border`, `knob_off` | `outline` |
+  | `window` | `surfaceContainerHigh` | `divider`, `outline` | `outlineVariant` |
+  | `pill` (tonal-кнопки, индикатор навигации), `track` | `secondaryContainer` | `selection` | `primaryContainer` |
+  | `accent` | `primary` | `on_accent`, `knob_on` | `onPrimary` |
+  | `accent_hover` | `primary` + 8% `onPrimary` (state layer) | `toggle_off` | `surfaceContainerHighest` |
+  | `err` | `error` | `ok`/`ok_bg`, `warn`/`warn_bg` | доп. цвета (как custom colors): зелёный #386a20 и янтарный #7c5800, тон 40/90 (светлая) или 80/30 (тёмная) |
+
+### Инструкция «КАК СДЕЛАТЬ ТЕМУ.html»
+
+- Подробная инструкция с настоящими скриншотами: `assets/theme-guide/` (HTML + `инструкция/*.png`, ~1.7 МБ).
+  Встроена в exe (`theme/guide.rs`, список — `theme/guide_files.rs`) и кладётся в папку тем при запуске окна и по
+  кнопке «папка тем», если её там нет или `guide::VERSION` новее (`инструкция/версия.txt`). Файлы тем пользователя не трогаются.
+  Установщику ничего добавлять не нужно. Пересборка скриншотов и текста — `tools/theme-guide/README.md`.
+- Файл выбранной своей темы перечитывается сам раз в секунду после сохранения (правка в Блокноте видна сразу);
+  файлы с ошибкой не пропадают молча — под списком тем пишется, какой файл и в какой строке.
