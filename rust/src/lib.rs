@@ -9,6 +9,7 @@ pub mod music;
 pub mod net;
 pub mod settings;
 pub mod sort;
+pub mod theme;
 pub mod spotify_app;
 pub mod vk_web;
 pub mod yandex_acc;

@@ -98,6 +98,8 @@ pub struct Settings {
     pub spotify_app: bool,
     /// искать замену в VK от аккаунта пользователя (первым, до YouTube Music)
     pub vk_search: bool,
+    /// тема оформления: "" — тёмная, "light"/… — встроенная, "file:<имя файла>" — своя из папки themes
+    pub theme: String,
     /// Яндекс Музыка от аккаунта: звук прямо с Яндекса и поиск замены там
     pub yandex_acc: bool,
     /// ключ API song.link (Odesli): точные ссылки на тот же трек на других сервисах
@@ -215,6 +217,7 @@ impl Default for Settings {
             vk_search: false,
             yandex_acc: false,
             odesli_key: String::new(),
+            theme: String::new(),
         }
     }
 }
