@@ -54,6 +54,99 @@ pub const FONTS: &[(&str, &str)] = &[("mono", "моноширинный"), ("san
 /// Набор значков.
 pub const ICON_SETS: &[(&str, &str)] = &[("line", "тонкие"), ("symbols", "символы")];
 
+/// Раскладка и форма — задаются только в файле темы (в окне не редактируются).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Layout {
+    /// навигация: "left" / "top" / "bottom"
+    pub nav: String,
+    /// подписи под значками навигации (false — только значки)
+    pub nav_labels: bool,
+    /// ширина левой навигации; от 140 — значок и подпись в строку
+    pub nav_width: f32,
+    /// в навигации: "logo" — значок программы, "name" — значок и название, "none" — ничего
+    pub header: String,
+    /// ширина колонки с содержимым
+    pub column: f32,
+    /// карточки: "fill" — заливка, "outline" — рамка, "none" — без фона
+    pub cards: String,
+    /// под карточками: "none" / "shadow" — тень / "glow" — свечение цвета акцента
+    pub shadow: String,
+    /// плотность: высота строк и кнопок (0.8 — компактно, 1.3 — просторно)
+    pub density: f32,
+    /// внутренние отступы (ещё растут вместе со скруглением)
+    pub padding: f32,
+    /// кнопки: "pill" — скруглённые, "rect" — прямоугольные, "outline" — контур, "flat" — плоские
+    pub buttons: String,
+    /// фон окна — градиент сверху вниз из 2–3 цветов (пусто — сплошной цвет bg)
+    pub background: Vec<Rgb>,
+    /// картинка PNG из папки тем поверх фона ("" — без картинки)
+    pub background_image: String,
+    /// непрозрачность картинки 0..1
+    pub image_opacity: f32,
+    /// размер шрифта (1 — обычный)
+    pub font_scale: f32,
+    /// жирные заголовки страниц и разделов
+    pub bold_headings: bool,
+    /// подписи разделов настроек: "lower" — как есть, "upper" — ПРОПИСНЫМИ
+    pub caps: String,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Layout {
+            nav: "left".into(),
+            nav_labels: true,
+            nav_width: 76.0,
+            header: "logo".into(),
+            column: 640.0,
+            cards: "fill".into(),
+            shadow: "none".into(),
+            density: 1.0,
+            padding: 1.0,
+            buttons: "pill".into(),
+            background: Vec::new(),
+            background_image: String::new(),
+            image_opacity: 0.25,
+            font_scale: 1.0,
+            bold_headings: false,
+            caps: "lower".into(),
+        }
+    }
+}
+
+fn one_of(v: &mut String, allowed: &[&str]) {
+    if !allowed.contains(&v.as_str()) {
+        *v = allowed[0].to_string();
+    }
+}
+
+fn clamp(v: &mut f32, lo: f32, hi: f32, def: f32) {
+    *v = if v.is_finite() { v.clamp(lo, hi) } else { def };
+}
+
+impl Layout {
+    pub fn sanitize(&mut self) {
+        one_of(&mut self.nav, &["left", "top", "bottom"]);
+        one_of(&mut self.header, &["logo", "name", "none"]);
+        one_of(&mut self.cards, &["fill", "outline", "none"]);
+        one_of(&mut self.shadow, &["none", "shadow", "glow"]);
+        one_of(&mut self.buttons, &["pill", "rect", "outline", "flat"]);
+        one_of(&mut self.caps, &["lower", "upper"]);
+        clamp(&mut self.nav_width, 60.0, 260.0, 76.0);
+        clamp(&mut self.column, 420.0, 1200.0, 640.0);
+        clamp(&mut self.density, 0.7, 1.6, 1.0);
+        clamp(&mut self.padding, 0.5, 2.5, 1.0);
+        clamp(&mut self.image_opacity, 0.0, 1.0, 0.25);
+        clamp(&mut self.font_scale, 0.8, 1.4, 1.0);
+        self.background.truncate(3);
+        // картинка — только имя файла в папке тем
+        if self.background_image.contains(['/', '\\', ':']) || self.background_image.starts_with('.') {
+            self.background_image.clear();
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Theme {
@@ -92,6 +185,8 @@ pub struct Theme {
     pub err: Rgb,
     pub warn: Rgb,
     pub warn_bg: Rgb,
+    /// раскладка и форма (только в файле)
+    pub layout: Layout,
 }
 
 impl Default for Theme {
@@ -155,6 +250,7 @@ impl Theme {
         if self.name.is_empty() {
             self.name = "без названия".into();
         }
+        self.layout.sanitize();
     }
 }
 
@@ -193,6 +289,7 @@ pub fn dark() -> Theme {
         err: Rgb::hex(0xf06e6e),
         warn: Rgb::hex(0xe8b44c),
         warn_bg: Rgb::hex(0x1d180c),
+        layout: Layout::default(),
     }
 }
 
@@ -217,8 +314,8 @@ pub fn light() -> Theme {
         selection: Rgb::hex(0xc9d7f7),
         text: Rgb::hex(0x1a1a1a),
         text_hover: Rgb::hex(0x000000),
-        muted: Rgb::hex(0x6b6b6b),
-        faint: Rgb::hex(0xa3a3a0),
+        muted: Rgb::hex(0x5c5c5c),
+        faint: Rgb::hex(0x7a7a77),
         accent: Rgb::hex(0x3b6cf0),
         accent_hover: Rgb::hex(0x2c58d4),
         on_accent: Rgb::hex(0xffffff),
@@ -231,6 +328,7 @@ pub fn light() -> Theme {
         err: Rgb::hex(0xd0433f),
         warn: Rgb::hex(0xa86d12),
         warn_bg: Rgb::hex(0xfbf0da),
+        layout: Layout::default(),
     }
 }
 
@@ -269,16 +367,17 @@ pub fn sunset() -> Theme {
         err: Rgb::hex(0xff6b8a),
         warn: Rgb::hex(0xffc861),
         warn_bg: Rgb::hex(0x2e2020),
+        layout: Layout::default(),
     }
 }
 
-/// Совсем другая: зелёный терминал, квадратные углы, значки-символы.
+/// Совсем другая: зелёный терминал, квадратные углы.
 pub fn terminal() -> Theme {
     Theme {
         name: "терминал".into(),
         radius: 0.0,
         font: "mono".into(),
-        icons: "symbols".into(),
+        icons: "line".into(),
         bg: Rgb::hex(0x050a05),
         sidebar: Rgb::hex(0x081008),
         sidebar_line: Rgb::hex(0x1a3a1a),
@@ -307,12 +406,229 @@ pub fn terminal() -> Theme {
         err: Rgb::hex(0xff5f56),
         warn: Rgb::hex(0xffd75f),
         warn_bg: Rgb::hex(0x1c1a08),
+        layout: Layout::default(),
+    }
+}
+
+/// Неон: навигация сверху с названием, карточки-рамки со свечением, градиент, контурные кнопки.
+pub fn neon() -> Theme {
+    Theme {
+        name: "неон".into(),
+        radius: 0.6,
+        font: "mono".into(),
+        icons: "line".into(),
+        bg: Rgb::hex(0x0b0820),
+        sidebar: Rgb::hex(0x0e0a26),
+        sidebar_line: Rgb::hex(0x2c1f5c),
+        surface: Rgb::hex(0x140f33),
+        surface_hi: Rgb::hex(0x231a52),
+        pill: Rgb::hex(0x120d2c),
+        border: Rgb::hex(0x4b2f8f),
+        divider: Rgb::hex(0x261c55),
+        outline: Rgb::hex(0x3a2a78),
+        window: Rgb::hex(0x120d2e),
+        field: Rgb::hex(0x08061a),
+        selection: Rgb::hex(0x5a2a8a),
+        text: Rgb::hex(0xeae6ff),
+        text_hover: Rgb::hex(0xffffff),
+        muted: Rgb::hex(0xa79fd6),
+        faint: Rgb::hex(0x6e66a3),
+        accent: Rgb::hex(0xff3df0),
+        accent_hover: Rgb::hex(0xff7af5),
+        on_accent: Rgb::hex(0x14001a),
+        toggle_off: Rgb::hex(0x2c2160),
+        knob_off: Rgb::hex(0xa79fd6),
+        knob_on: Rgb::hex(0x14001a),
+        track: Rgb::hex(0x261c55),
+        ok: Rgb::hex(0x3dffc5),
+        ok_bg: Rgb::hex(0x0b2228),
+        err: Rgb::hex(0xff4f7b),
+        warn: Rgb::hex(0xffd23d),
+        warn_bg: Rgb::hex(0x231a14),
+        layout: Layout {
+            nav: "top".into(),
+            header: "name".into(),
+            cards: "outline".into(),
+            shadow: "glow".into(),
+            buttons: "outline".into(),
+            background: vec![Rgb::hex(0x0b0820), Rgb::hex(0x1a0b2e), Rgb::hex(0x061428)],
+            bold_headings: true,
+            caps: "upper".into(),
+            column: 700.0,
+            ..Layout::default()
+        },
+    }
+}
+
+/// Облако: светлая и мягкая — навигация снизу одними значками, просторно, круглые плоские кнопки, тени.
+pub fn cloud() -> Theme {
+    Theme {
+        name: "облако".into(),
+        radius: 2.0,
+        font: "sans".into(),
+        icons: "line".into(),
+        bg: Rgb::hex(0xf3f1fb),
+        sidebar: Rgb::hex(0xffffff),
+        sidebar_line: Rgb::hex(0xe4e0f3),
+        surface: Rgb::hex(0xffffff),
+        surface_hi: Rgb::hex(0xece8fb),
+        pill: Rgb::hex(0xf1eefc),
+        border: Rgb::hex(0xdcd6f0),
+        divider: Rgb::hex(0xeeebf8),
+        outline: Rgb::hex(0xd9d3ef),
+        window: Rgb::hex(0xffffff),
+        field: Rgb::hex(0xf6f4fd),
+        selection: Rgb::hex(0xd6cdfb),
+        text: Rgb::hex(0x24213a),
+        text_hover: Rgb::hex(0x000000),
+        muted: Rgb::hex(0x5d5878),
+        faint: Rgb::hex(0x7f7a99),
+        accent: Rgb::hex(0x7b61ff),
+        accent_hover: Rgb::hex(0x6448f0),
+        on_accent: Rgb::hex(0xffffff),
+        toggle_off: Rgb::hex(0xd9d3ef),
+        knob_off: Rgb::hex(0xffffff),
+        knob_on: Rgb::hex(0xffffff),
+        track: Rgb::hex(0xe4e0f3),
+        ok: Rgb::hex(0x22955a),
+        ok_bg: Rgb::hex(0xe5f6ec),
+        err: Rgb::hex(0xd23f5e),
+        warn: Rgb::hex(0x9a6a00),
+        warn_bg: Rgb::hex(0xfbf1d9),
+        layout: Layout {
+            nav: "bottom".into(),
+            nav_labels: false,
+            header: "none".into(),
+            shadow: "shadow".into(),
+            density: 1.15,
+            buttons: "flat".into(),
+            background: vec![Rgb::hex(0xf7f0ff), Rgb::hex(0xeef3ff)],
+            font_scale: 1.08,
+            ..Layout::default()
+        },
+    }
+}
+
+/// Бумага: газетная — широкая левая панель со строками, квадратные углы, прямоугольные кнопки, прописные заголовки.
+pub fn paper() -> Theme {
+    Theme {
+        name: "бумага".into(),
+        radius: 0.0,
+        font: "mono".into(),
+        icons: "line".into(),
+        bg: Rgb::hex(0xf2ede1),
+        sidebar: Rgb::hex(0xe8e1d0),
+        sidebar_line: Rgb::hex(0x1b1b1b),
+        surface: Rgb::hex(0xfbf8f0),
+        surface_hi: Rgb::hex(0xe9e2d0),
+        pill: Rgb::hex(0xf2ede1),
+        border: Rgb::hex(0x1b1b1b),
+        divider: Rgb::hex(0xcfc6b0),
+        outline: Rgb::hex(0x1b1b1b),
+        window: Rgb::hex(0xfbf8f0),
+        field: Rgb::hex(0xffffff),
+        selection: Rgb::hex(0xf5c4b8),
+        text: Rgb::hex(0x141414),
+        text_hover: Rgb::hex(0x000000),
+        muted: Rgb::hex(0x4f4a40),
+        faint: Rgb::hex(0x6f695c),
+        accent: Rgb::hex(0xd8361a),
+        accent_hover: Rgb::hex(0xb52a10),
+        on_accent: Rgb::hex(0xffffff),
+        toggle_off: Rgb::hex(0xc9c0aa),
+        knob_off: Rgb::hex(0xfbf8f0),
+        knob_on: Rgb::hex(0xffffff),
+        track: Rgb::hex(0xd9d0bb),
+        ok: Rgb::hex(0x1f7a3a),
+        ok_bg: Rgb::hex(0xe3eedb),
+        err: Rgb::hex(0xc0261a),
+        warn: Rgb::hex(0x8a5a00),
+        warn_bg: Rgb::hex(0xf5e7c4),
+        layout: Layout {
+            nav_width: 190.0,
+            header: "name".into(),
+            cards: "outline".into(),
+            buttons: "rect".into(),
+            density: 0.95,
+            font_scale: 1.04,
+            bold_headings: true,
+            caps: "upper".into(),
+            column: 720.0,
+            ..Layout::default()
+        },
     }
 }
 
 /// Встроенные темы: ключ в настройках ("" — тёмная) и сама тема.
 pub fn builtins() -> Vec<(&'static str, Theme)> {
-    vec![("", dark()), ("light", light()), ("sunset", sunset()), ("terminal", terminal())]
+    vec![
+        ("", dark()),
+        ("light", light()),
+        ("sunset", sunset()),
+        ("terminal", terminal()),
+        ("neon", neon()),
+        ("cloud", cloud()),
+        ("paper", paper()),
+    ]
+}
+
+/// Убрать комментарии `// …` и `/* … */` (вне строк) — в файлах тем их можно писать.
+pub fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut it = text.chars().peekable();
+    let mut in_str = false;
+    while let Some(c) = it.next() {
+        if in_str {
+            out.push(c);
+            if c == '\\' {
+                if let Some(n) = it.next() {
+                    out.push(n);
+                }
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match (c, it.peek()) {
+            ('"', _) => {
+                in_str = true;
+                out.push(c);
+            }
+            ('/', Some('/')) => {
+                for n in it.by_ref() {
+                    if n == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            ('/', Some('*')) => {
+                it.next();
+                let mut prev = ' ';
+                for n in it.by_ref() {
+                    if prev == '*' && n == '/' {
+                        break;
+                    }
+                    prev = n;
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Пример темы со всеми полями и пояснениями — кладётся в папку тем.
+pub const EXAMPLE_FILE: &str = "_пример — все поля.json";
+pub const EXAMPLE: &str = include_str!("theme_example.json");
+
+/// Положить в папку тем пример со всеми полями (если его там ещё нет).
+pub fn ensure_example(dir: &Path) {
+    let p = dir.join(EXAMPLE_FILE);
+    if !p.exists() {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(p, EXAMPLE);
+    }
 }
 
 pub const FILE_PREFIX: &str = "file:";
@@ -326,7 +642,7 @@ pub fn dir() -> PathBuf {
 pub fn read_from(path: &Path) -> Result<Theme, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("не прочитать {}: {e}", path.display()))?;
     let bad = |e: serde_json::Error| format!("{} — не тема: {e}", path.display());
-    let v: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(bad)?;
+    let v: serde_json::Value = serde_json::from_str(&strip_comments(text.trim_start_matches('\u{feff}'))).map_err(bad)?;
     let named = v.get("name").and_then(|n| n.as_str()).is_some_and(|s| !s.trim().is_empty());
     let mut t: Theme = serde_json::from_value(v).map_err(bad)?;
     if !named {
@@ -445,6 +761,36 @@ mod tests {
         std::fs::write(&path, r##"{"bg": "красный"}"##).unwrap();
         assert!(read_from(&path).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn example_has_every_field_and_parses() {
+        let v: serde_json::Value = serde_json::from_str(&strip_comments(EXAMPLE)).unwrap();
+        let t: Theme = serde_json::from_value(v.clone()).unwrap();
+        let full = serde_json::to_value(dark()).unwrap();
+        let keys = |v: &serde_json::Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(keys(&v), keys(&full), "в примере должны быть все поля темы");
+        assert_eq!(keys(&v["layout"]), keys(&full["layout"]), "и все поля layout");
+        let mut s = t.clone();
+        s.sanitize();
+        assert_eq!(s, t, "значения примера — допустимые");
+    }
+
+    #[test]
+    fn comments_and_strings() {
+        let j = strip_comments("{\"a\": \"http://x\", // c\n /* b */ \"b\": \"q\\\"//\"}");
+        let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+        assert_eq!(v["a"], "http://x");
+        assert_eq!(v["b"], "q\"//");
+    }
+
+    #[test]
+    fn builtins_are_sane() {
+        for (_, t) in builtins() {
+            let mut s = t.clone();
+            s.sanitize();
+            assert_eq!(s, t, "{}", t.name);
+        }
     }
 
     #[test]

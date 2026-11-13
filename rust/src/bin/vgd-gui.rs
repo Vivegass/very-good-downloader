@@ -61,6 +61,65 @@ struct Pal {
     radius: f32,
     /// значки обычными символами вместо Segoe MDL2
     symbols: bool,
+    lay: Lay,
+}
+
+/// Раскладка и форма из темы (layout), в удобном для рисования виде.
+#[derive(Clone, Copy)]
+struct Lay {
+    /// 0 — слева, 1 — сверху, 2 — снизу
+    nav: u8,
+    nav_labels: bool,
+    nav_width: f32,
+    /// 0 — значок программы, 1 — значок и название, 2 — ничего
+    header: u8,
+    column: f32,
+    /// 0 — заливка, 1 — рамка, 2 — без фона
+    cards: u8,
+    /// 0 — нет, 1 — тень, 2 — свечение
+    shadow: u8,
+    density: f32,
+    padding: f32,
+    /// 0 — скруглённые, 1 — прямоугольные, 2 — контур, 3 — плоские
+    buttons: u8,
+    bg: [Color32; 3],
+    bg_n: usize,
+    image_opacity: f32,
+    bold: bool,
+    upper: bool,
+    light: bool,
+}
+
+fn idx(v: &str, opts: &[&str]) -> u8 {
+    opts.iter().position(|o| *o == v).unwrap_or(0) as u8
+}
+
+impl Lay {
+    fn of(t: &Theme) -> Self {
+        let l = &t.layout;
+        let mut bg = [rgb(t.bg); 3];
+        for (i, c) in l.background.iter().take(3).enumerate() {
+            bg[i] = rgb(*c);
+        }
+        Lay {
+            nav: idx(&l.nav, &["left", "top", "bottom"]),
+            nav_labels: l.nav_labels,
+            nav_width: l.nav_width,
+            header: idx(&l.header, &["logo", "name", "none"]),
+            column: l.column,
+            cards: idx(&l.cards, &["fill", "outline", "none"]),
+            shadow: idx(&l.shadow, &["none", "shadow", "glow"]),
+            density: l.density,
+            padding: l.padding,
+            buttons: idx(&l.buttons, &["pill", "rect", "outline", "flat"]),
+            bg,
+            bg_n: l.background.len().min(3),
+            image_opacity: l.image_opacity,
+            bold: l.bold_headings,
+            upper: l.caps == "upper",
+            light: t.is_light(),
+        }
+    }
 }
 
 fn rgb(c: Rgb) -> Color32 {
@@ -100,6 +159,7 @@ impl Pal {
             warn_bg: rgb(t.warn_bg),
             radius: t.radius,
             symbols: t.icons == "symbols",
+            lay: Lay::of(t),
         }
     }
 }
@@ -118,7 +178,79 @@ fn rad(r: u8) -> u8 {
     (r as f32 * pal().radius).round().clamp(0.0, 255.0) as u8
 }
 
-const COLUMN: f32 = 640.0;
+/// Скругление кнопок: у прямоугольных — почти без него.
+fn btn_rad(r: u8) -> u8 {
+    if pal().lay.buttons == 1 { rad(r).min(3) } else { rad(r) }
+}
+
+/// Отступ по горизонтали: множитель темы, при скруглении больше обычного — шире, чтобы текст не прилипал к углам.
+fn pad(x: f32) -> f32 {
+    let p = pal();
+    x * p.lay.padding * (1.0 + (p.radius - 1.0).max(0.0) * 0.5)
+}
+
+/// Высота строк и кнопок с учётом плотности.
+fn dens(x: f32) -> f32 {
+    (x * pal().lay.density).round()
+}
+
+/// Внутренние поля карточек и плашек.
+fn margin(x: f32, y: f32) -> Margin {
+    let p = pal();
+    Margin::symmetric(pad(x).round().clamp(0.0, 120.0) as i8, (y * p.lay.padding * p.lay.density).round().clamp(0.0, 120.0) as i8)
+}
+
+/// Тень или свечение под карточками.
+fn card_shadow() -> egui::Shadow {
+    let p = pal();
+    match p.lay.shadow {
+        1 => egui::Shadow { offset: [0, 4], blur: 18, spread: 0, color: Color32::from_black_alpha(if p.lay.light { 28 } else { 110 }) },
+        2 => egui::Shadow { offset: [0, 0], blur: 16, spread: 0, color: p.accent.gamma_multiply(0.28) },
+        _ => egui::Shadow::NONE,
+    }
+}
+
+/// Заголовок страницы.
+fn heading(text: &str, size: f32) -> RichText {
+    let r = RichText::new(text).size(size).color(pal().text);
+    if pal().lay.bold { r.family(bold()) } else { r }
+}
+
+/// Фон окна: градиент сверху вниз и картинка из темы.
+fn paint_background(ui: &egui::Ui) {
+    let p = pal();
+    let rect = ui.max_rect();
+    if p.lay.bg_n >= 2 {
+        let mut m = egui::Mesh::default();
+        let n = p.lay.bg_n;
+        for i in 0..n {
+            let y = egui::lerp(rect.top()..=rect.bottom(), i as f32 / (n - 1) as f32);
+            m.colored_vertex(egui::pos2(rect.left(), y), p.lay.bg[i]);
+            m.colored_vertex(egui::pos2(rect.right(), y), p.lay.bg[i]);
+            if i > 0 {
+                let k = (i * 2) as u32;
+                m.add_triangle(k - 2, k - 1, k);
+                m.add_triangle(k - 1, k, k + 1);
+            }
+        }
+        ui.painter().add(egui::Shape::mesh(m));
+    }
+    BG_IMG.with(|b| {
+        if let Some(tex) = &b.borrow().1 {
+            // как «cover»: заполнить всё, лишнее обрезать
+            let [w, h] = tex.size();
+            let (ia, ra) = (w as f32 / h.max(1) as f32, rect.width() / rect.height().max(1.0));
+            let uv = if ia > ra {
+                let f = ra / ia;
+                egui::Rect::from_min_max(egui::pos2((1.0 - f) / 2.0, 0.0), egui::pos2((1.0 + f) / 2.0, 1.0))
+            } else {
+                let f = ia / ra;
+                egui::Rect::from_min_max(egui::pos2(0.0, (1.0 - f) / 2.0), egui::pos2(1.0, (1.0 + f) / 2.0))
+            };
+            ui.painter().image(tex.id(), rect, uv, Color32::WHITE.gamma_multiply(p.lay.image_opacity));
+        }
+    });
+}
 
 // Значки из шрифта Segoe MDL2 Assets (есть в каждой Windows 10/11).
 const I_DOWNLOAD: char = '\u{E896}';
@@ -374,7 +506,7 @@ impl App {
             }
         }
         let theme = theme::load(&s.theme);
-        apply_theme(&cc.egui_ctx, &theme, true);
+        apply_theme(&cc.egui_ctx, &theme);
         cc.egui_ctx.set_zoom_factor(s.ui_scale.clamp(0.5, 3.0));
         let logo = eframe::icon_data::from_png_bytes(include_bytes!("../../app.png")).ok().map(|ic| {
             let img = egui::ColorImage::from_rgba_unmultiplied([ic.width as usize, ic.height as usize], &ic.rgba);
@@ -712,8 +844,9 @@ impl App {
     fn group(&mut self, ui: &mut egui::Ui, title: &str) -> bool {
         let open = !self.s.collapsed.iter().any(|c| c == title);
         ui.add_space(12.0);
-        let font = FontId::monospace(11.5);
-        let size = text_size(ui, title, &font) + Vec2::new(18.0, 4.0);
+        let font = if pal().lay.bold { FontId::new(11.5, bold()) } else { FontId::monospace(11.5) };
+        let shown = if pal().lay.upper { title.to_uppercase() } else { title.to_string() };
+        let size = text_size(ui, &shown, &font) + Vec2::new(18.0, 4.0);
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
         let color = if resp.hovered() { pal().text } else { pal().muted };
@@ -725,7 +858,7 @@ impl App {
             vec![c + Vec2::new(-2.0, -4.0), c + Vec2::new(3.0, 0.0), c + Vec2::new(-2.0, 4.0)]
         };
         ui.painter().add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
-        ui.painter().text(egui::pos2(rect.left() + 16.0, rect.center().y), Align2::LEFT_CENTER, title, font, color);
+        ui.painter().text(egui::pos2(rect.left() + 16.0, rect.center().y), Align2::LEFT_CENTER, shown, font, color);
         if resp.clicked() {
             if open {
                 self.s.collapsed.push(title.to_string());
@@ -961,27 +1094,105 @@ impl App {
 
     // ---------- боковая панель ----------
 
-    fn ui_sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(12.0);
-        ui.vertical_centered(|ui| {
-            if let Some(logo) = &self.logo {
-                ui.add(egui::Image::new(logo).fit_to_exact_size(Vec2::splat(28.0)));
-            }
+    /// Пункты навигации: страница, значок, подпись, число в кружке.
+    fn nav_pages(&self) -> [(Page, char, &'static str, Option<usize>); 4] {
+        let running = self.jobs.iter().filter(|j| matches!(j.state, State::Queued | State::Running)).count();
+        let badge = (running > 0).then_some(running);
+        [
+            (Page::Download, I_DOWNLOAD, "скачать", badge),
+            (Page::Subs, I_SUBS, "подписки", None),
+            (Page::Settings, I_SETTINGS, "настройки", None),
+            (Page::Log, I_LOG, "журнал", None),
+        ]
+    }
+
+    /// Значок программы и (в теме с header = "name") её название.
+    fn nav_header(&self, ui: &mut egui::Ui, size: f32, two_lines: bool) {
+        let lay = pal().lay;
+        if lay.header == 2 {
+            return;
+        }
+        if let Some(logo) = &self.logo {
+            ui.add(egui::Image::new(logo).fit_to_exact_size(Vec2::splat(size)));
+        }
+        if lay.header == 1 {
+            let t = RichText::new(if two_lines { "very good
+downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
+            ui.label(if lay.bold { t.family(bold()) } else { t });
+        }
+    }
+
+    /// Навигация полосой сверху или снизу.
+    fn ui_navbar(&mut self, ui: &mut egui::Ui) {
+        let lay = pal().lay;
+        let pages = self.nav_pages();
+        let font = FontId::monospace(12.0);
+        let widths: Vec<f32> = pages.iter().map(|(_, _, l, _)| nav_row_width(ui, l, lay.nav_labels, &font)).collect();
+        let total: f32 = widths.iter().sum::<f32>() + 4.0 * (pages.len() as f32 - 1.0);
+        ui.horizontal_centered(|ui| {
             ui.add_space(14.0);
-            let running = self.jobs.iter().filter(|j| matches!(j.state, State::Queued | State::Running)).count();
-            for (page, icon, label) in [
-                (Page::Download, I_DOWNLOAD, "скачать"),
-                (Page::Subs, I_SUBS, "подписки"),
-                (Page::Settings, I_SETTINGS, "настройки"),
-                (Page::Log, I_LOG, "журнал"),
-            ] {
-                let badge = if page == Page::Download && running > 0 { Some(running) } else { None };
-                if nav_item(ui, icon, label, self.page == page, badge).clicked() {
+            let start = ui.cursor().left();
+            self.nav_header(ui, 22.0, false);
+            // без названия слева — пункты по центру полосы
+            let used = ui.cursor().left() - start;
+            let full = ui.available_width() + used;
+            let gap = if lay.header == 2 || lay.nav == 2 { ((full - total) / 2.0 - used).max(12.0) } else { 18.0 };
+            ui.add_space(gap);
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for ((page, icon, label, badge), w) in pages.into_iter().zip(widths) {
+                if nav_row(ui, icon, label, self.page == page, badge, w, lay.nav_labels).clicked() {
                     self.page = page;
                 }
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(14.0);
+                ui.label(RichText::new(format!("v{APP_VERSION}")).size(10.5).color(pal().faint));
+            });
+        });
+    }
+
+    fn ui_sidebar(&mut self, ui: &mut egui::Ui) {
+        let lay = pal().lay;
+        let wide = lay.nav_width >= 140.0;
+        ui.add_space(12.0);
+        if wide {
+            // широкая панель: значок и подпись в строку
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                self.nav_header(ui, 24.0, true);
+            });
+            ui.add_space(14.0);
+            let w = ui.available_width() - 16.0;
+            for (page, icon, label, badge) in self.nav_pages() {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    if nav_row(ui, icon, label, self.page == page, badge, w, true).clicked() {
+                        self.page = page;
+                    }
+                });
                 ui.add_space(2.0);
             }
-        });
+        } else {
+            ui.vertical_centered(|ui| {
+                if lay.header != 2 {
+                    if let Some(logo) = &self.logo {
+                        ui.add(egui::Image::new(logo).fit_to_exact_size(Vec2::splat(28.0)));
+                    }
+                    ui.add_space(14.0);
+                }
+                for (page, icon, label, badge) in self.nav_pages() {
+                    let r = if lay.nav_labels {
+                        nav_item(ui, icon, label, self.page == page, badge)
+                    } else {
+                        nav_row(ui, icon, label, self.page == page, badge, 44.0, false)
+                    };
+                    if r.clicked() {
+                        self.page = page;
+                    }
+                    ui.add_space(2.0);
+                }
+            });
+        }
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
             ui.add_space(10.0);
             ui.label(RichText::new(format!("v{APP_VERSION}")).size(10.5).color(pal().faint));
@@ -996,7 +1207,7 @@ impl App {
             centered(ui, |ui| {
                 ui.add_space(18.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("very good downloader").size(17.0).color(pal().text));
+                    ui.label(heading("very good downloader", 17.0));
                     ui.label(RichText::new("youtube · spotify · apple music · soundcloud · яндекс музыка · vk…").size(11.5).color(pal().faint));
                 });
                 ui.add_space(10.0);
@@ -1008,7 +1219,7 @@ impl App {
                     .fill(pal().surface)
                     .stroke(Stroke::new(1.0, if has_focus { pal().muted } else { pal().border }))
                     .corner_radius(rad(12))
-                    .inner_margin(Margin { left: 12, right: 12, top: 9, bottom: 9 })
+                    .inner_margin(margin(12.0, 9.0))
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| {
                             ui.label(RichText::new(glyph(I_LINK).to_string()).family(icons()).size(15.0).color(pal().muted));
@@ -1030,6 +1241,11 @@ impl App {
                 let music_mode = self.urls.lines().any(|l| vgd::music::is_music_url(l.trim()));
                 let spotify = self.urls.to_lowercase().contains("spotify");
                 ui.horizontal(|ui| {
+                    // место под кнопки справа — переключатель качества переносится, а не наезжает на них
+                    let reserve = pill_width(ui, "скачать") + pill_width(ui, "вставить") + dens(34.0) + 3.0 * ui.spacing().item_spacing.x + 6.0;
+                    let seg_w = (ui.available_width() - reserve).max(120.0);
+                    ui.scope(|ui| {
+                    ui.set_max_width(seg_w);
                     if music_mode {
                         let mut f = self.s.music_format.clone();
                         let opts = vec![
@@ -1051,6 +1267,7 @@ impl App {
                             self.save_settings();
                         }
                     }
+                    });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if pill(ui, Some(I_DOWNLOAD), "скачать", true, true).on_hover_text("Ctrl+Enter").clicked() {
                             self.add_and_start(&ctx);
@@ -1059,10 +1276,14 @@ impl App {
                             self.paste();
                             self.add_and_start(&ctx);
                         }
-                        let (r, resp) = ui.allocate_exact_size(Vec2::new(34.0, 34.0), Sense::click());
+                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(dens(34.0)), Sense::click());
                         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("открыть папку загрузок");
-                        ui.painter().rect_filled(r, rad(11), if resp.hovered() { pal().surface_hi } else { pal().surface });
-                        ui.painter().rect_stroke(r, rad(11), Stroke::new(1.0, pal().border), StrokeKind::Inside);
+                        let style = pal().lay.buttons;
+                        let fill = if resp.hovered() { pal().surface_hi } else if style == 2 { Color32::TRANSPARENT } else { pal().surface };
+                        ui.painter().rect_filled(r, btn_rad(11), fill);
+                        if style != 3 {
+                            ui.painter().rect_stroke(r, btn_rad(11), Stroke::new(1.0, pal().border), StrokeKind::Inside);
+                        }
                         paint_folder(ui.painter(), r.center(), pal().text);
                         if resp.clicked() {
                             let _ = std::fs::create_dir_all(&self.s.out_dir);
@@ -1073,7 +1294,7 @@ impl App {
                 ui.add_space(6.0);
                 // кратко о текущих настройках — щелчок открывает настройки
                 if spotify {
-                    egui::Frame::new().fill(pal().warn_bg).corner_radius(rad(10)).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+                    egui::Frame::new().fill(pal().warn_bg).corner_radius(rad(10)).inner_margin(margin(12.0, 8.0)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.add(egui::Label::new(RichText::new(
                             "spotify отдаёт программе только первые 100 треков плейлиста. если треков больше — откройте плейлист                              в браузере и нажмите там кнопку «скачать плейлист» (расширение very good downloader): она передаст весь список.",
@@ -1240,7 +1461,7 @@ impl App {
                 });
                 ui.add_space(4.0);
                 if self.jobs.is_empty() {
-                    egui::Frame::new().stroke(Stroke::new(1.0, pal().outline)).corner_radius(rad(12)).inner_margin(14).show(ui, |ui| {
+                    egui::Frame::new().stroke(Stroke::new(1.0, pal().outline)).corner_radius(rad(12)).inner_margin(margin(14.0, 14.0)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(RichText::new("пусто — вставь ссылку выше или нажми «скачать» в браузере").size(12.0).color(pal().faint));
                     });
@@ -1309,7 +1530,7 @@ impl App {
         egui::ScrollArea::vertical().id_salt("settings").auto_shrink([false, false]).show(ui, |ui| {
             centered(ui, |ui| {
                 ui.add_space(18.0);
-                ui.label(RichText::new("настройки").size(17.0).color(pal().text));
+                ui.label(heading("настройки", 17.0));
                 ui.add_space(10.0);
 
                 if self.group(ui, "расширение для браузера") || self.ext_wizard {
@@ -1662,7 +1883,7 @@ impl App {
             centered(ui, |ui| {
                 ui.add_space(18.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("подписки").size(17.0).color(pal().text));
+                    ui.label(heading("подписки", 17.0));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if small_pill_enabled(ui, "проверить все", !self.s.subscriptions.is_empty()).clicked() {
                             self.check_subs(None);
@@ -1873,7 +2094,7 @@ impl App {
         let seen = ipc::extension_version().or_else(|| (!self.s.ext_version.is_empty()).then(|| self.s.ext_version.clone()));
         if self.ext_wizard && seen.is_none() {
             // Открыто сразу после установки программы.
-            egui::Frame::new().fill(pal().ok_bg).corner_radius(rad(12)).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+            egui::Frame::new().fill(pal().ok_bg).corner_radius(rad(12)).inner_margin(margin(14.0, 10.0)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new("поставьте расширение — на сайтах появятся кнопки ↓").size(13.0).color(pal().text));
                 ui.add(egui::Label::new(RichText::new("выберите браузер: программа откроет его и подскажет, что нажать. это минута.").size(12.0).color(pal().muted)).wrap());
@@ -1903,7 +2124,7 @@ impl App {
         });
         if let Some(name) = self.ext_steps {
             ui.add_space(6.0);
-            egui::Frame::new().fill(pal().ok_bg).corner_radius(rad(12)).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+            egui::Frame::new().fill(pal().ok_bg).corner_radius(rad(12)).inner_margin(margin(14.0, 10.0)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let firefox = name == "Firefox";
                 ui.label(RichText::new(if firefox { "осталось нажать «добавить» в firefox:".to_string() } else { format!("осталось два щелчка в «{name}»:") }).size(12.5).color(pal().text));
@@ -1937,7 +2158,7 @@ impl App {
     fn ui_log(&mut self, ui: &mut egui::Ui) {
         egui::Frame::new().inner_margin(Margin { left: 20, right: 20, top: 18, bottom: 16 }).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("журнал").size(17.0).color(pal().text));
+                ui.label(heading("журнал", 17.0));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if small_pill_enabled(ui, "очистить", !self.log.is_empty()).clicked() {
                         self.log.clear();
@@ -2017,7 +2238,7 @@ impl App {
         let mut go = false;
         egui::Modal::new(egui::Id::unique("sortplan")).show(ctx, |ui| {
             ui.set_width(760.0);
-            ui.label(RichText::new(format!("разложить {} файл(ов)?", plan.len())).size(18.0).color(pal().text));
+            ui.label(heading(&format!("разложить {} файл(ов)?", plan.len()), 18.0));
             ui.add_space(4.0);
             ui.label(RichText::new("сначала посмотрите, куда что переедет").size(12.0).color(pal().muted));
             ui.add_space(10.0);
@@ -2068,7 +2289,7 @@ impl App {
         let mut up = None;
         egui::Modal::new(egui::Id::unique("topics")).show(ctx, |ui| {
             ui.set_width(620.0);
-            ui.label(RichText::new("категории").size(18.0).color(pal().text));
+            ui.label(heading("категории", 18.0));
             ui.add_space(4.0);
             ui.add(egui::Label::new(RichText::new(
                 "категория — это папка в папке загрузок. видео попадает в неё, если в названии, тегах, нике канала или плейлисте есть её слова. \
@@ -2139,7 +2360,7 @@ impl App {
         }
         egui::Modal::new(egui::Id::unique("exit")).show(ctx, |ui| {
             ui.set_width(340.0);
-            ui.label(RichText::new("идёт загрузка").size(18.0).color(pal().text));
+            ui.label(heading("идёт загрузка", 18.0));
             ui.add_space(4.0);
             ui.add(
                 egui::Label::new(
@@ -2318,16 +2539,27 @@ impl eframe::App for App {
             self.log_find_focus = true;
         }
 
-        egui::Panel::left("nav")
-            .exact_size(76.0)
-            .resizable(false)
-            .frame(egui::Frame::new().fill(pal().sidebar).stroke(Stroke::new(1.0, pal().sidebar_line)))
-            .show(ui, |ui| self.ui_sidebar(ui));
-        egui::CentralPanel::default_margins().frame(egui::Frame::new().fill(pal().bg)).show(ui, |ui| match self.page {
-            Page::Download => self.ui_download(ui),
-            Page::Settings => self.ui_settings(ui),
-            Page::Subs => self.ui_subs(ui),
-            Page::Log => self.ui_log(ui),
+        // Навигация: слева (как раньше) или полосой сверху/снизу — по теме.
+        let nav_frame = egui::Frame::new().fill(pal().sidebar).stroke(Stroke::new(1.0, pal().sidebar_line));
+        match pal().lay.nav {
+            1 => {
+                egui::Panel::top("nav_top").exact_size(dens(50.0)).resizable(false).frame(nav_frame).show(ui, |ui| self.ui_navbar(ui));
+            }
+            2 => {
+                egui::Panel::bottom("nav_bottom").exact_size(dens(54.0)).resizable(false).frame(nav_frame).show(ui, |ui| self.ui_navbar(ui));
+            }
+            _ => {
+                egui::Panel::left("nav").exact_size(pal().lay.nav_width).resizable(false).frame(nav_frame).show(ui, |ui| self.ui_sidebar(ui));
+            }
+        }
+        egui::CentralPanel::default_margins().frame(egui::Frame::new().fill(pal().bg)).show(ui, |ui| {
+            paint_background(ui);
+            match self.page {
+                Page::Download => self.ui_download(ui),
+                Page::Settings => self.ui_settings(ui),
+                Page::Subs => self.ui_subs(ui),
+                Page::Log => self.ui_log(ui),
+            }
         });
 
         self.ui_sort_plan(&ctx);
@@ -2354,10 +2586,10 @@ fn same(a: &Settings, b: &Settings) -> bool {
     serde_json::to_string(a).ok() == serde_json::to_string(b).ok()
 }
 
-/// Колонка по центру шириной до COLUMN.
+/// Колонка по центру шириной до layout.column из темы.
 fn centered(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     let avail = ui.available_width();
-    let w = (avail - 40.0).min(COLUMN);
+    let w = (avail - 40.0).min(pal().lay.column);
     let side = ((avail - w) / 2.0).max(0.0);
     ui.horizontal_top(|ui| {
         ui.add_space(side);
@@ -2381,9 +2613,9 @@ fn text_size(ui: &egui::Ui, text: &str, font: &FontId) -> Vec2 {
 fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, value: &mut T, opts: &[(T, String)]) -> bool {
     let mut changed = false;
     let font = FontId::monospace(13.0);
-    let total: f32 = opts.iter().map(|(_, l)| (text_size(ui, l, &font).x + 24.0).max(48.0) + 2.0).sum::<f32>() + 6.0;
+    let total: f32 = opts.iter().map(|(_, l)| (text_size(ui, l, &font).x + 24.0 * pal().lay.padding).max(48.0) + 2.0).sum::<f32>() + 6.0;
     let width = total.min(ui.available_width());
-    egui::Frame::new().fill(pal().surface).corner_radius(rad(11)).inner_margin(3).show(ui, |ui| {
+    egui::Frame::new().fill(pal().surface).corner_radius(btn_rad(11)).inner_margin(3).show(ui, |ui| {
         ui.set_max_width(width - 6.0);
         ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
         ui.horizontal_wrapped(|ui| {
@@ -2391,8 +2623,8 @@ fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, value: &mut T, opts: &[(T,
             let rtl = ui.layout().main_dir() == egui::Direction::RightToLeft;
             let items: Vec<&(T, String)> = if rtl { opts.iter().rev().collect() } else { opts.iter().collect() };
             for (v, label) in items {
-                let size = text_size(ui, label, &font) + Vec2::new(24.0, 0.0);
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(size.x.max(48.0), 30.0), Sense::click());
+                let size = text_size(ui, label, &font) + Vec2::new(24.0 * pal().lay.padding, 0.0);
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(size.x.max(48.0), dens(30.0)), Sense::click());
                 let selected = v == value;
                 let fill = if selected {
                     pal().accent
@@ -2401,7 +2633,7 @@ fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, value: &mut T, opts: &[(T,
                 } else {
                     Color32::TRANSPARENT
                 };
-                ui.painter().rect_filled(rect, rad(8), fill);
+                ui.painter().rect_filled(rect, btn_rad(8), fill);
                 ui.painter().text(
                     rect.center(),
                     Align2::CENTER_CENTER,
@@ -2422,7 +2654,14 @@ fn segmented<T: PartialEq + Clone>(ui: &mut egui::Ui, value: &mut T, opts: &[(T,
 
 /// Карточка с несколькими строками настроек.
 fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new().fill(pal().surface).corner_radius(rad(12)).inner_margin(Margin::symmetric(12, 6)).show(ui, |ui| {
+    let p = pal();
+    let f = egui::Frame::new().corner_radius(rad(12)).inner_margin(margin(12.0, 6.0)).shadow(card_shadow());
+    let f = match p.lay.cards {
+        1 => f.fill(p.surface.gamma_multiply(0.55)).stroke(Stroke::new(1.0, p.border)),
+        2 => f,
+        _ => f.fill(p.surface),
+    };
+    f.show(ui, |ui| {
         ui.set_width(ui.available_width());
         add(ui);
     });
@@ -2437,8 +2676,8 @@ fn divider(ui: &mut egui::Ui) {
 fn row(ui: &mut egui::Ui, label: &str, tip: &str, add: impl FnOnce(&mut egui::Ui)) {
     let open_id = egui::Id::unique(("tip", label));
     let mut open = ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
-    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 38.0), Layout::left_to_right(Align::Center), |ui| {
-        ui.set_min_height(38.0);
+    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), dens(38.0)), Layout::left_to_right(Align::Center), |ui| {
+        ui.set_min_height(dens(38.0));
         ui.label(RichText::new(label).size(13.0).color(pal().text));
         if !tip.is_empty() {
             // Кружок «?»: щелчок показывает/скрывает пояснение под строкой.
@@ -2483,12 +2722,16 @@ fn small_pill(ui: &mut egui::Ui, text: &str) -> egui::Response {
 /// Небольшая кнопка для строк настроек.
 fn small_pill_enabled(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     let font = FontId::monospace(12.0);
-    let size = text_size(ui, text, &font) + Vec2::new(22.0, 0.0);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(size.x, 28.0), if enabled { Sense::click() } else { Sense::hover() });
+    let size = text_size(ui, text, &font) + Vec2::new(pad(22.0), 0.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(size.x, dens(28.0)), if enabled { Sense::click() } else { Sense::hover() });
     let hovered = enabled && resp.hovered();
     let p = ui.painter();
-    p.rect_filled(rect, rad(9), if hovered { pal().surface_hi } else { pal().pill });
-    p.rect_stroke(rect, rad(9), Stroke::new(1.0, pal().border), StrokeKind::Inside);
+    let style = pal().lay.buttons;
+    let fill = if hovered { pal().surface_hi } else if style == 2 { Color32::TRANSPARENT } else { pal().pill };
+    p.rect_filled(rect, btn_rad(9), fill);
+    if style != 3 {
+        p.rect_stroke(rect, btn_rad(9), Stroke::new(1.0, pal().border), StrokeKind::Inside);
+    }
     p.text(rect.center(), Align2::CENTER_CENTER, text, font, if enabled { pal().text } else { pal().faint });
     if enabled {
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -2497,26 +2740,42 @@ fn small_pill_enabled(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Res
     }
 }
 
+/// Ширина кнопки pill() со значком.
+fn pill_width(ui: &egui::Ui, text: &str) -> f32 {
+    text_size(ui, text, &FontId::monospace(13.5)).x + 22.0 + pad(28.0)
+}
+
 /// Кнопка-«пилюля»: основная — светлая, остальные — тёмные.
 fn pill(ui: &mut egui::Ui, icon: Option<char>, text: &str, primary: bool, enabled: bool) -> egui::Response {
     let font = FontId::monospace(13.5);
     let ifont = FontId::new(14.0, icons());
     let tw = text_size(ui, text, &font).x;
     let iw = if icon.is_some() { 22.0 } else { 0.0 };
-    let size = Vec2::new(tw + iw + 28.0, 34.0);
+    let size = Vec2::new(tw + iw + pad(28.0), dens(34.0));
     let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
     let hovered = enabled && resp.hovered();
+    let c = pal();
+    let style = c.lay.buttons;
     let (fill, fg) = match (primary, enabled) {
-        (true, true) => (if hovered { pal().accent_hover } else { pal().accent }, pal().on_accent),
-        (false, true) => (if hovered { pal().surface_hi } else { pal().surface }, pal().text),
-        (_, false) => (pal().surface, pal().faint),
+        (true, true) if style == 2 => (if hovered { c.accent.gamma_multiply(0.18) } else { Color32::TRANSPARENT }, c.accent),
+        (true, true) => (if hovered { c.accent_hover } else { c.accent }, c.on_accent),
+        (false, true) if style == 2 => (if hovered { c.surface_hi } else { Color32::TRANSPARENT }, c.text),
+        (false, true) => (if hovered { c.surface_hi } else { c.surface }, c.text),
+        (_, false) => (if style == 2 { Color32::TRANSPARENT } else { c.surface }, c.faint),
+    };
+    let stroke = match (style, primary, enabled) {
+        (3, _, _) => Stroke::NONE,
+        (2, true, true) => Stroke::new(1.5, if hovered { c.accent_hover } else { c.accent }),
+        (2, _, _) => Stroke::new(1.0, c.border),
+        (_, true, _) => Stroke::NONE,
+        _ => Stroke::new(1.0, c.border),
     };
     let p = ui.painter();
-    p.rect_filled(rect, rad(11), fill);
-    if !primary {
-        p.rect_stroke(rect, rad(11), Stroke::new(1.0, pal().border), StrokeKind::Inside);
+    p.rect_filled(rect, btn_rad(11), fill);
+    if stroke != Stroke::NONE {
+        p.rect_stroke(rect, btn_rad(11), stroke, StrokeKind::Inside);
     }
-    let mut x = rect.left() + 14.0;
+    let mut x = rect.left() + pad(14.0);
     if let Some(ic) = icon {
         p.text(egui::pos2(x, rect.center().y + 1.0), Align2::LEFT_CENTER, glyph(ic), ifont, fg);
         x += iw;
@@ -2579,6 +2838,37 @@ fn nav_item(ui: &mut egui::Ui, icon: char, label: &str, selected: bool, badge: O
     p.text(rect.center_bottom() - Vec2::new(0.0, 13.0), Align2::CENTER_CENTER, label, FontId::monospace(11.0), fg);
     if let Some(n) = badge {
         let c = rect.right_top() + Vec2::new(-14.0, 12.0);
+        p.circle_filled(c, 8.0, pal().accent);
+        p.text(c, Align2::CENTER_CENTER, n.min(99).to_string(), FontId::monospace(10.0), pal().on_accent);
+    }
+    resp
+}
+
+fn nav_row_width(ui: &egui::Ui, label: &str, labels: bool, font: &FontId) -> f32 {
+    if labels { text_size(ui, label, font).x + 46.0 } else { 44.0 }
+}
+
+/// Пункт навигации в строку: значок и подпись рядом (или только значок с подсказкой).
+fn nav_row(ui: &mut egui::Ui, icon: char, label: &str, selected: bool, badge: Option<usize>, width: f32, labels: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, dens(38.0)), Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let resp = if labels { resp } else { resp.on_hover_text(label) };
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(rect, btn_rad(10), pal().surface_hi);
+    } else if resp.hovered() {
+        p.rect_filled(rect, btn_rad(10), pal().surface);
+    }
+    let fg = if selected || resp.hovered() { pal().text } else { pal().muted };
+    let ifont = FontId::new(16.0, icons());
+    if labels {
+        p.text(egui::pos2(rect.left() + 20.0, rect.center().y + 1.0), Align2::CENTER_CENTER, glyph(icon), ifont, fg);
+        p.text(egui::pos2(rect.left() + 36.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::monospace(12.0), fg);
+    } else {
+        p.text(rect.center() + Vec2::new(0.0, 1.0), Align2::CENTER_CENTER, glyph(icon), ifont, fg);
+    }
+    if let Some(n) = badge {
+        let c = if labels { egui::pos2(rect.right() - 14.0, rect.center().y) } else { rect.right_top() + Vec2::new(-8.0, 8.0) };
         p.circle_filled(c, 8.0, pal().accent);
         p.text(c, Align2::CENTER_CENTER, n.min(99).to_string(), FontId::monospace(10.0), pal().on_accent);
     }
@@ -2935,27 +3225,76 @@ fn work(shared: Arc<Mutex<Shared>>, tx: Sender<Event>, ctx: egui::Context, side:
     ctx.request_repaint();
 }
 
-/// Применить тему: цвета, скругление и (если сменились шрифт или значки) шрифты.
-fn apply_theme(ctx: &egui::Context, t: &Theme, fonts: bool) {
+thread_local! {
+    /// для каких шрифта/значков/размера уже собраны шрифты
+    static FONT_KEY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    /// картинка фона темы (layout.background_image) и её имя
+    static BG_IMG: std::cell::RefCell<(String, Option<egui::TextureHandle>)> = const { std::cell::RefCell::new((String::new(), None)) };
+}
+
+/// Применить тему: цвета, скругление, раскладку; шрифты и картинка фона — только если они сменились.
+fn apply_theme(ctx: &egui::Context, t: &Theme) {
     PAL.with(|p| p.set(Pal::of(t)));
-    if fonts {
+    let key = format!("{}|{}|{}|{}", t.font, t.icons, t.layout.font_scale, t.layout.bold_headings);
+    if FONT_KEY.with(|k| *k.borrow() != key) {
         setup_fonts(ctx, t);
+        FONT_KEY.with(|k| *k.borrow_mut() = key);
+    }
+    let img = t.layout.background_image.clone();
+    if BG_IMG.with(|b| b.borrow().0 != img) {
+        let tex = (!img.is_empty())
+            .then(|| std::fs::read(theme::dir().join(&img)).ok())
+            .flatten()
+            .and_then(|bytes| eframe::icon_data::from_png_bytes(&bytes).ok())
+            .map(|ic| {
+                let ci = egui::ColorImage::from_rgba_unmultiplied([ic.width as usize, ic.height as usize], &ic.rgba);
+                ctx.load_texture("theme_bg", ci, egui::TextureOptions::LINEAR)
+            });
+        BG_IMG.with(|b| *b.borrow_mut() = (img, tex));
     }
     setup_style(ctx, t.is_light());
+}
+
+fn bold() -> FontFamily {
+    FontFamily::Name("bold".into())
 }
 
 fn setup_fonts(ctx: &egui::Context, t: &Theme) {
     let mut fonts = FontDefinitions::default();
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     let dir = PathBuf::from(windir).join("Fonts");
+    let scale = t.layout.font_scale;
+    let data = |bytes: Vec<u8>, s: f32| {
+        let d = FontData::from_owned(bytes);
+        Arc::new(if s == 1.0 { d } else { d.tweak(egui::epaint::text::FontTweak { scale: s, ..Default::default() }) })
+    };
     // Моноширинный шрифт для всего интерфейса: Cascadia Mono (Windows 11 / Terminal), иначе Consolas.
     // В теме со шрифтом «sans» — Segoe UI.
     let files: &[&str] = if t.font == "sans" { &["segoeui.ttf", "CascadiaMono.ttf", "consola.ttf"] } else { &["CascadiaMono.ttf", "consola.ttf"] };
-    let mono = files.iter().find_map(|f| std::fs::read(dir.join(f)).ok());
-    if let Some(bytes) = mono {
-        fonts.font_data.insert("mono".into(), Arc::new(FontData::from_owned(bytes)));
+    let mono = files.iter().find_map(|f| std::fs::read(dir.join(f)).ok().map(|b| (*f, b)));
+    if let Some((_, bytes)) = &mono {
+        fonts.font_data.insert("mono".into(), data(bytes.clone(), scale));
         for fam in [FontFamily::Proportional, FontFamily::Monospace] {
             fonts.families.entry(fam).or_default().insert(0, "mono".into());
+        }
+    }
+    // Жирный для заголовков: Segoe UI Bold, Cascadia Mono с толщиной 700 (шрифт переменный) или Consolas Bold.
+    let mut bold_fam = Vec::new();
+    if t.layout.bold_headings {
+        let b = match &mono {
+            Some(("segoeui.ttf", _)) => std::fs::read(dir.join("segoeuib.ttf")).ok().map(|b| data(b, scale)),
+            Some(("CascadiaMono.ttf", bytes)) => Some(Arc::new(FontData::from_owned(bytes.clone()).tweak(
+                egui::epaint::text::FontTweak {
+                    scale,
+                    coords: egui::epaint::text::VariationCoords::new([("wght", 700.0)]),
+                    ..Default::default()
+                },
+            ))),
+            _ => std::fs::read(dir.join("consolab.ttf")).ok().map(|b| data(b, scale)),
+        };
+        if let Some(b) = b {
+            fonts.font_data.insert("bold".into(), b);
+            bold_fam.push("bold".to_string());
         }
     }
     // Запасные шрифты для названий на японском, китайском, корейском и значков вроде 【】★♪ —
@@ -2967,27 +3306,32 @@ fn setup_fonts(ctx: &egui::Context, t: &Theme) {
         ("sym", &["seguisym.ttf"][..]),
     ] {
         if let Some(bytes) = files.iter().find_map(|f| std::fs::read(dir.join(f)).ok()) {
-            fonts.font_data.insert(key.into(), Arc::new(FontData::from_owned(bytes)));
+            if key == "sym" && t.icons == "symbols" {
+                // для значков — крупнее, чтобы не терялись рядом с текстом
+                fonts.font_data.insert("sym_icons".into(), data(bytes.clone(), 1.3));
+            }
+            fonts.font_data.insert(key.into(), data(bytes, scale));
             for fam in [FontFamily::Proportional, FontFamily::Monospace] {
                 fonts.families.entry(fam).or_default().push(key.into());
             }
         }
     }
+    let text_fam = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
+    bold_fam.extend(text_fam.iter().cloned());
+    fonts.families.insert(bold(), bold_fam);
     if t.icons == "symbols" {
-        // Значки-символы: Segoe UI Symbol, затем основной шрифт.
-        let mut fam = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-        if let Some(i) = fam.iter().position(|f| f == "sym") {
-            let sym = fam.remove(i);
-            fam.insert(0, sym);
+        // Значки-символы: Segoe UI Symbol (крупнее), затем основной шрифт.
+        let mut fam = text_fam.clone();
+        if fonts.font_data.contains_key("sym_icons") {
+            fam.insert(0, "sym_icons".into());
         }
         fonts.families.insert(icons(), fam);
     } else if let Ok(bytes) = std::fs::read(dir.join("segmdl2.ttf")) {
-        fonts.font_data.insert("icons".into(), Arc::new(FontData::from_owned(bytes)));
+        fonts.font_data.insert("icons".into(), data(bytes, scale));
         fonts.families.insert(icons(), vec!["icons".into()]);
     } else {
         // Без значков: пусть хотя бы не будет ошибки шрифта.
-        let fallback = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-        fonts.families.insert(icons(), fallback);
+        fonts.families.insert(icons(), text_fam);
     }
     ctx.set_fonts(fonts);
 }

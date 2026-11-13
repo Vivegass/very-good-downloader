@@ -23,11 +23,10 @@ impl App {
     /// Сменить тему (ключ как в Settings::theme) и сразу применить.
     fn select_theme(&mut self, ctx: &egui::Context, key: &str, t: Theme) {
         self.flush_theme();
-        let fonts = t.font != self.theme.font || t.icons != self.theme.icons;
         self.theme = t;
         self.s.theme = key.to_string();
         self.themes.confirm_delete = false;
-        apply_theme(ctx, &self.theme, fonts);
+        apply_theme(ctx, &self.theme);
     }
 
     fn custom_stem(&self) -> Option<String> {
@@ -108,10 +107,10 @@ impl App {
                 }
             });
             divider(ui);
-            row(ui, "свои темы", "«создать» — копия текущей темы, её цвета можно менять. «импорт» — добавить тему из файла .json.", |ui| {
+            row(ui, "свои темы", "«создать» — копия текущей темы: в ней можно менять цвета, скругление, шрифт и значки. раскладка (навигация сверху/снизу, вид карточек и кнопок, фон-градиент, размер шрифта) задаётся в файле темы — в папке тем лежит пример со всеми полями и пояснениями. «импорт» — добавить тему из файла .json.", |ui| {
                 if small_pill(ui, "папка тем").clicked() {
                     let dir = theme::dir();
-                    let _ = std::fs::create_dir_all(&dir);
+                    theme::ensure_example(&dir);
                     open_path(&dir);
                     self.themes.customs = None;
                 }
@@ -126,7 +125,7 @@ impl App {
                         }
                     }
                 }
-                if small_pill(ui, "создать на основе текущей").clicked() {
+                if small_pill(ui, "создать").clicked() {
                     let mut t = self.theme.clone();
                     t.name = if custom.is_some() { format!("{} копия", t.name) } else { format!("моя {}", t.name) };
                     self.themes.msg.clear();
@@ -136,7 +135,9 @@ impl App {
         });
 
         // Образец: всё окно и так меняется сразу, а здесь — все виды кнопок рядом.
-        ui.add_space(6.0);
+        ui.add_space(10.0);
+        ui.label(RichText::new("пример").size(12.0).color(pal().muted));
+        ui.add_space(4.0);
         card(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
@@ -157,7 +158,6 @@ impl App {
         });
 
         let Some(stem) = custom else {
-            hint(ui, "чтобы менять цвета, скругление, шрифт и значки — нажмите «создать на основе текущей».");
             if !self.themes.msg.is_empty() {
                 hint(ui, &self.themes.msg.clone());
             }
@@ -166,17 +166,18 @@ impl App {
 
         ui.add_space(6.0);
         let mut changed = false;
-        let mut fonts = false;
         card(ui, |ui| {
             row(ui, "название", "", |ui| {
-                if small_pill(ui, "переименовать").clicked() {
+                if small_pill(ui, "сохранить").clicked() {
                     self.rename_theme(&stem);
                 }
                 ui.add(egui::TextEdit::singleline(&mut self.themes.name_edit).desired_width(180.0));
             });
             divider(ui);
             row(ui, "скругление углов", "0 — квадратные углы, 1 — как в тёмной теме, 3 — совсем круглые.", |ui| {
-                if ui.add(egui::Slider::new(&mut self.theme.radius, 0.0..=3.0).step_by(0.1)).changed() {
+                // справа налево: число, левее — ползунок
+                ui.label(RichText::new(format!("{:.1}", self.theme.radius)).size(12.5).color(pal().text));
+                if slider(ui, &mut self.theme.radius, 0.0..=3.0, 0.1) {
                     changed = true;
                 }
             });
@@ -185,7 +186,6 @@ impl App {
                 let opts: Vec<(String, String)> = FONTS.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect();
                 if segmented(ui, &mut self.theme.font, &opts) {
                     changed = true;
-                    fonts = true;
                 }
             });
             divider(ui);
@@ -193,7 +193,6 @@ impl App {
                 let opts: Vec<(String, String)> = ICON_SETS.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect();
                 if segmented(ui, &mut self.theme.icons, &opts) {
                     changed = true;
-                    fonts = true;
                 }
             });
             divider(ui);
@@ -246,7 +245,7 @@ impl App {
         if changed {
             self.theme.sanitize();
             self.themes.dirty = true;
-            apply_theme(&ctx, &self.theme, fonts);
+            apply_theme(&ctx, &self.theme);
         }
     }
 
@@ -288,4 +287,34 @@ impl App {
             Err(e) => self.themes.msg = format!("не удалить {}: {e}", path.display()),
         }
     }
+}
+
+/// Горизонтальный ползунок: полоса, заполненная часть цветом акцента и кружок; тянуть или щёлкнуть.
+fn slider(ui: &mut egui::Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f32) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(170.0, 22.0), Sense::click_and_drag());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let (lo, hi) = (*range.start(), *range.end());
+    let track = rect.shrink2(Vec2::new(8.0, 0.0));
+    let mut changed = false;
+    if let Some(pos) = resp.interact_pointer_pos() {
+        if resp.dragged() || resp.clicked() {
+            let t = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
+            let v = ((lo + t * (hi - lo)) / step).round() * step;
+            if (v - *value).abs() > f32::EPSILON {
+                *value = v.clamp(lo, hi);
+                changed = true;
+            }
+        }
+    }
+    let t = ((*value - lo) / (hi - lo)).clamp(0.0, 1.0);
+    let x = egui::lerp(track.left()..=track.right(), t);
+    let y = rect.center().y;
+    let p = ui.painter();
+    let bar = egui::Rect::from_min_max(egui::pos2(track.left(), y - 2.0), egui::pos2(track.right(), y + 2.0));
+    p.rect_filled(bar, 2, pal().track);
+    p.rect_filled(egui::Rect::from_min_max(bar.min, egui::pos2(x, bar.max.y)), 2, pal().accent);
+    let hot = resp.hovered() || resp.dragged();
+    p.circle_filled(egui::pos2(x, y), if hot { 8.0 } else { 7.0 }, pal().accent);
+    p.circle_filled(egui::pos2(x, y), 3.0, pal().on_accent);
+    changed
 }
