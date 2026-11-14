@@ -20,7 +20,9 @@ powershell -ExecutionPolicy Bypass -File rust\build.ps1
 
 Собирает `cargo build --release`, кладёт всё в `rust\dist\VeryGoodDownloader\` и, если установлен
 Inno Setup 6, делает `release\VeryGoodDownloader-Setup-<версия>.exe`. Установщик ставится поверх
-старых версий (тот же AppId) и удаляет остатки версии 1.0 (`_internal`).
+старых версий (тот же AppId) и удаляет остатки версии 1.0 (`_internal`). Там же —
+`VeryGoodDownloader-<версия>-portable.zip`, `.sha256` к обоим файлам и `РЕЛИЗ-<версия>.txt`: что приложить
+к релизу на GitHub (см. «Обновления»).
 
 Для разработки: положить `yt-dlp.exe`, `ffmpeg.exe`, `deno.exe` в `rust\bin\` — программа из
 `target\release` найдёт их там. Тесты: `cargo test --lib`.
@@ -312,3 +314,82 @@ Inno Setup 6, делает `release\VeryGoodDownloader-Setup-<версия>.exe`
   задачей установщика (по умолчанию выключено): `HKCU\…\Run\VeryGoodDownloader = "<exe>" --background`
   (`appinfo::set_autostart`; `fix_autostart` переводит запись на новый путь, если старый exe исчез).
 - Тест `ipc::tests::tickets_and_show`.
+
+## Обновления (GitHub Releases)
+
+Программа сама проверяет `GET https://api.github.com/repos/Vivegass/very-good-downloader/releases`
+(без токена, User-Agent `VeryGoodDownloader/<версия>`), скачивает новую версию, сверяет SHA-256 и ставит её.
+Общая часть — `core/src/update.rs` (ПК и Android), установка на Windows — `desktop/src/updater.rs`,
+окно — `desktop/src/bin/gui/update_ui.rs`.
+
+### Схема релизов и тегов
+
+| | ПК (Windows) | Android |
+|---|---|---|
+| тег | `v1.11.1` (бета: `v1.12.0-beta.1` + галочка «pre-release») | `android-v0.4.0` (бета: `android-v0.5.0-beta.1`) |
+| ассеты | `VeryGoodDownloader-Setup-<ver>.exe`, `VeryGoodDownloader-<ver>-portable.zip` | `VeryGoodDownloader-android-<ver>-arm64.apk` |
+| контрольная сумма | `<ассет>.sha256` рядом (кладёт `build.ps1`) | `<ассет>.sha256` рядом |
+
+Выбрана схема **отдельных релизов**: у ПК и Android свои номера версий (1.11 и 0.3), поэтому в одном релизе
+им тесно. ПК смотрит только теги `v<цифра>…`, Android — только `android-v…`; черновики (draft) пропускаются,
+пре-релизы предлагаются только с галочкой «бета-версии» (и тег с `-beta`/`-rc` — тоже).
+Версии сравниваются по semver: `1.9.0 < 1.10.0 < 1.11.0 < 1.12.0-beta.1 < 1.12.0`.
+
+SHA-256 берётся из поля `digest` ассета в ответе API (`"sha256:…"`, GitHub считает его сам для новых ассетов);
+если его нет — из ассета `<имя>.sha256` (`<хэш>  <имя>`). Нет ни того ни другого — обновление не предлагается.
+Описание релиза (markdown) показывается в окне по «что нового».
+
+Как выпустить версию ПК: поднять `version` в `rust/Cargo.toml` → `rust\build.ps1` → создать релиз с тегом
+`v<версия>` и приложить файлы из `release\РЕЛИЗ-<версия>.txt` (установщик, zip и оба `.sha256`).
+
+### Как обновляется ПК
+
+- при запуске окна (и в фоне, в трее) — проверка, если включено «проверять обновления автоматически»
+  и прошло 6 ч с прошлой; настройки в `%APPDATA%\VeryGoodDownloader\update.json`
+  (`auto`, `beta`, `last_check`, `skip`, `known`) — отдельно от `settings.json`;
+- новая версия → плашка на главной «доступна версия X · что нового · обновить · позже»
+  («что нового» → «пропустить эту версию»), а если окно в трее — уведомление Windows
+  (щелчок — `vgd://show`, открывает окно); настройки → «доступ и обновления»: «проверить обновления»,
+  «проверять автоматически», «бета-версии»;
+- «обновить»: идут загрузки — вопрос «после загрузок / сейчас»; файл качается в
+  `%APPDATA%\VeryGoodDownloader\update\` с докачкой (`Range`, до 8 попыток подряд без прогресса,
+  «связь замерла» — 45 с), проверяются размер и SHA-256;
+- установленная программа (рядом `unins000.exe`): скрипт-помощник ждёт выхода программы и запускает
+  `Setup.exe /SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /VGDRELAUNCH=window|background`;
+  установщик после тихой установки запускает программу снова (в фоне, если она была в трее) — `[Run]` с
+  `Check: ShouldRelaunch` в `installer/VeryGoodDownloader.iss`. Установка в Program Files попросит UAC;
+- portable: zip распаковывается заранее (`update\portable-<ver>`), после выхода помощник копирует файлы
+  поверх и запускает программу; не получилось — запускает старую;
+- новая версия при запуске видит `update\pending.json`: «Программа обновлена: A → B» в журнале или
+  «не установилось» с хвостом `update\update.log` (там же `setup.log` установщика).
+
+### Проверка без настоящего релиза
+
+`VGD_UPDATE_URL` подменяет адрес списка релизов (только для отладки; тогда разрешены `http://`-ссылки).
+`rust\tools\update-mock.ps1 -Assets <папка> -Version 1.11.1 [-NoDigest] [-CutOnce] [-BadHash]` отдаёт
+`http://localhost:8765/releases` в формате GitHub API и сами файлы с поддержкой `Range` (`-CutOnce` обрывает
+первую загрузку на середине). Чтобы не задеть настоящую установку, тестовый установщик собирается со своим
+AppId: `ISCC /DAppVersion=1.11.1 /DAppIdGuid=<другой> /DAppDirName="VGD Update Test" installer\VeryGoodDownloader.iss`,
+а программа запускается с `APPDATA=<временная папка>`. Ключи установщика из Git Bash искажаются
+(`/VERYSILENT` → путь) — запускать из PowerShell.
+
+### API модуля `update` для Kotlin (через UniFFI в `android/src/lib.rs`)
+
+```rust
+use vgd_core::update::{self, Platform, Prefs, Release};
+
+// проверить: Ok(Some(release)) — есть новее; Ok(None) — последняя; Err — текст ошибки («сеть: …» — нет связи)
+update::check_str("0.3.0", Platform::Android, prefs.beta) -> Result<Option<Release>, String>
+// скачать в папку (обычно cacheDir/update) с докачкой и проверкой SHA-256; путь к .apk
+update::download(&release, &dir, &mut |done: u64, total: u64| -> bool { /* прогресс; false — отмена */ true })
+    -> Result<PathBuf, String>
+// «проверять автоматически», «бета-версии», 6 ч, «пропустить версию» — файл <data_dir>/update.json
+let mut p = Prefs::load(); p.due(update::now()); p.record(now, found.as_ref()); p.skip = v; p.save();
+p.pending(&Version::parse("0.3.0").unwrap()) // найденное раньше и не пропущенное — показать без сети
+```
+
+`Release` — запись: `version`, `tag`, `title`, `notes` (markdown), `page_url`, `published`, `prerelease`,
+`asset_name`, `asset_url`, `size`, `sha256`, `sha256_url` (всё `String`/`u64`/`bool` — годится для
+`#[derive(uniffi::Record)]`-копии в обёртке). Для прогресса в обёртке — callback-интерфейс
+`fun onProgress(done: ULong, total: ULong): Boolean`, который зовётся из `download`. Установка APK
+(PackageInstaller / `ACTION_VIEW` с FileProvider, разрешение «установка из неизвестных источников») — в Kotlin.

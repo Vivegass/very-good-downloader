@@ -115,7 +115,9 @@ try {
         $setupLog = Join-Path (Split-Path $log) 'setup.log'
         $a = '/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /VGDRELAUNCH=' + $bg + ' /LOG="' + $setupLog + '"'
         L "запускаю установщик: $src $a"
-        $p = Start-Process -FilePath $src -ArgumentList $a -PassThru -Wait
+        # Не -Wait: в PowerShell 5.1 он ждёт и всех потомков — то есть и перезапущенную программу.
+        $p = Start-Process -FilePath $src -ArgumentList $a -PassThru
+        if (-not $p.WaitForExit(30 * 60 * 1000)) { L 'установщик не закончил за 30 мин'; return }
         L "установщик закончил, код $($p.ExitCode)"
         # Установщик сам запускает программу (VGDRELAUNCH). Не установилось — вернуть старую.
         if ($p.ExitCode -ne 0) { Run-App $exe }
