@@ -307,9 +307,12 @@ fun DownloadContent(
     var order by remember { mutableStateOf<List<ULong>?>(null) }
     val haptic = LocalHapticFeedback.current
     val listState = rememberLazyListState()
+    // лямбда перетаскивания живёт дольше одного кадра — берёт свежий список, а не тот, что был при создании
+    val latestJobs by androidx.compose.runtime.rememberUpdatedState(jobs)
     val dd = remember(listState) {
         DragDrop(listState) { from, to ->
-            val cur = (order ?: jobs.map { it.id }).toMutableList()
+            val all = latestJobs.map { it.id }
+            val cur = ((order ?: all).filter { it in all } + all.filter { it !in (order ?: all) }).toMutableList()
             val a = cur.indexOfFirst { it.toLong() == from }
             val b = cur.indexOfFirst { it.toLong() == to }
             if (a >= 0 && b >= 0) {
@@ -320,7 +323,8 @@ fun DownloadContent(
     }
     // Ядро прислало новый порядок — локальный больше не нужен.
     LaunchedEffect(jobs) { if (dd.key == null) order = null }
-    val shown = (order?.mapNotNull { id -> jobs.firstOrNull { it.id == id } } ?: jobs).filter { it.id !in hidden }
+    val shown = (order?.let { o -> o.mapNotNull { id -> jobs.firstOrNull { it.id == id } } + jobs.filter { it.id !in o } } ?: jobs)
+        .filter { it.id !in hidden }
     val active = jobs.count { it.state == JobState.QUEUED || it.state == JobState.RUNNING }
 
     fun start() {
@@ -357,22 +361,7 @@ fun DownloadContent(
             state = listState,
             contentPadding = PaddingValues(top = inner.calculateTopPadding() + 4.dp, bottom = inner.calculateBottomPadding() + 24.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxSize().pointerInput(dd) {
-                detectDragGesturesAfterLongPress(
-                    onDragStart = { if (dd.start(it.y)) haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
-                    onDrag = { change, amount ->
-                        if (dd.key != null) {
-                            change.consume()
-                            if (dd.drag(amount.y)) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        }
-                    },
-                    onDragEnd = {
-                        order?.let { actions.reorder(it) }
-                        dd.end()
-                    },
-                    onDragCancel = { dd.end() },
-                )
-            },
+            modifier = Modifier.fillMaxSize(),
         ) {
             item(key = "input") {
                 KitCard(Modifier.fillMaxWidth().padding(horizontal = pad)) {
@@ -456,8 +445,28 @@ fun DownloadContent(
             }
             items(shown, key = { it.id.toLong() }) { j ->
                 val lifted = dd.key == j.id.toLong()
+                val key = j.id.toLong()
                 Box(
-                    Modifier.zIndex(if (lifted) 1f else 0f)
+                    // долгое нажатие на карточке → тянуть (на самой карточке: иначе жест забирает прокрутка списка)
+                    Modifier.pointerInput(key) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                dd.key = key
+                                dd.offset = 0f
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                if (dd.drag(amount.y)) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            },
+                            onDragEnd = {
+                                order?.let { actions.reorder(it) }
+                                dd.end()
+                            },
+                            onDragCancel = { dd.end() },
+                        )
+                    }
+                        .zIndex(if (lifted) 1f else 0f)
                         .graphicsLayer {
                             translationY = if (lifted) dd.offset else 0f
                             scaleX = if (lifted) 1.02f else 1f

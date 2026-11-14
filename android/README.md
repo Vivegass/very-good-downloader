@@ -44,6 +44,18 @@ Gradle сам собирает Rust (`cargo ndk … --profile android -p vgd-and
 - Ядро без Android: в `rust/` — `cargo test --lib` (ПК), `cargo test -p vgd-android`,
   `cargo ndk -t arm64-v8a check -p vgd-core -p vgd-android`.
 
+## Эмулятор (Pixel 6, Android 16)
+
+```powershell
+$env:ANDROID_AVD_HOME = "D:\Android\avd"
+D:\Android\Sdk\emulator\emulator.exe -avd vgd_pixel6 -no-snapshot-save -dns-server 8.8.8.8,1.1.1.1
+.\gradlew.bat assembleDebug -Pvgd.abis=arm64-v8a,x86_64
+D:\Android\Sdk\platform-tools\adb.exe install -r -g app\build\outputs\apk\debug\app-debug.apk
+```
+
+Без `-dns-server` у эмулятора на Windows не работает DNS (yt-dlp: «No address associated with hostname»).
+Скриншоты экранов во всех стилях без эмулятора: `.\gradlew.bat testDebugUnitTest --tests *ScreensTest* -Pvgd.screens=<папка>`.
+
 ## Установка на телефон
 
 1. На телефоне: «Настройки → О телефоне → Номер сборки» 7 раз → «Для разработчиков» → «Отладка по USB».
@@ -66,7 +78,8 @@ Debug-сборка ставится как отдельное приложени
 | `Shortcuts.kt`, `res/xml/shortcuts.xml` | ярлыки «Видео» / «Звук»: Direct Share в «Поделиться» и на значке приложения |
 | `VkAgent.kt`, `LoginActivity.kt` | VK: скрытый WebView с `vk_agent.js` (поиск), окно входа VK / YouTube (→ `cookies.txt`) |
 | `SubsWorker.kt` | подписки раз в 6 ч по Wi-Fi (WorkManager, служба dataSync) |
-| `ui/App.kt` | каркас (заголовок, навигация по стилю), «Скачать», «Журнал» |
+| `ui/App.kt` | каркас, «Скачать» (очередь: превью, перетаскивание, смахнуть — убрать), «Журнал» |
+| `ui/Kit.kt`, `ui/Images.kt` | элементы по стилю (заголовок, навигация, группы, переключатели, кнопки, выбор, прогресс); превью и значки платформ |
 | `ui/Subs.kt`, `ui/Settings.kt` | «Подписки»; «Настройки» (загрузки, монтаж, музыка, аккаунты, папка, оформление, телефон, yt-dlp, проверка) |
 | `ui/Theme.kt` | стиль по марке (Material You / One UI / HyperOS / HarmonyOS / iOS — `VgdStyle`), темы с ПК → `ColorScheme` |
 | `../rust/android/src/lib.rs` | что видит Kotlin: `init`, настройки JSON, `Core` (очередь), темы, `diagnose`, VK, yt-dlp |

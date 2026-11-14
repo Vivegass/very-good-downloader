@@ -1085,6 +1085,8 @@ impl Downloader {
         let mut stdout = String::new();
         let mut errors = Vec::new();
         let mut last_other = String::new();
+        // продолжение многострочного предупреждения (строки с отступом) — не в журнал
+        let mut skip_cont = false;
         // --encoding: иначе пути с кириллицей yt-dlp печатает в кодировке консоли (cp1251).
         let mut full: Vec<String> = vec!["--encoding".into(), "utf-8".into()];
         full.extend_from_slice(args);
@@ -1099,9 +1101,18 @@ impl Downloader {
                 on_line(me, line);
                 return;
             }
+            if skip_cont && line.starts_with([' ', '\t']) {
+                return;
+            }
+            skip_cont = false;
             if let Some(m) = line.strip_prefix("ERROR: ") {
                 errors.push(m.to_string());
             } else if let Some(m) = line.strip_prefix("WARNING: ") {
+                // «версии больше 90 дней» — обновление есть в настройках (на телефоне — само при запуске)
+                if m.contains("older than 90 days") {
+                    skip_cont = true;
+                    return;
+                }
                 // Шумные предупреждения не нужны в журнале.
                 if !m.contains("ffprobe")
                     && !m.contains("Falling back")

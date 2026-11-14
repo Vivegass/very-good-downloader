@@ -64,6 +64,7 @@ object Vgd {
                 core = c
                 _ready.value = ""
                 addLog("Very Good Downloader для Android ${BuildConfig.VERSION_NAME} (ядро ${io.github.vivegass.vgd.core.version()})")
+                Thread { updateYtdlpIfOld(c) }.start()
                 return c
             } catch (e: Throwable) {
                 Log.e(TAG, "init", e)
@@ -74,6 +75,26 @@ object Vgd {
     }
 
     fun coreOrNull(): Core? = core
+
+    /**
+     * yt-dlp из youtubedl-android вшит в APK и стареет; YouTube ломает старые версии. Старше 45 дней и очередь
+     * пуста — обновить сразу при запуске (как кнопка в настройках).
+     */
+    private fun updateYtdlpIfOld(c: Core) {
+        try {
+            val v = io.github.vivegass.vgd.core.ytdlpVersion() ?: return
+            val m = Regex("""(\d{4})\.(\d{1,2})\.(\d{1,2})""").find(v) ?: return
+            val (y, mo, d) = m.destructured
+            val built = java.time.LocalDate.of(y.toInt(), mo.toInt(), d.toInt())
+            val age = java.time.temporal.ChronoUnit.DAYS.between(built, java.time.LocalDate.now())
+            if (age < 45 || c.active()) return
+            addLog("yt-dlp $v старше 45 дней — обновляю…")
+            val nv = io.github.vivegass.vgd.core.updateYtdlp()
+            addLog("yt-dlp обновлён: $nv")
+        } catch (e: Throwable) {
+            addLog("Внимание: не удалось обновить yt-dlp: ${e.message}")
+        }
+    }
 
     private fun unpackTools(ctx: Context): ToolPaths {
         YoutubeDL.getInstance().init(ctx)
