@@ -138,13 +138,18 @@ fn register_toast_app() -> bool {
 
 /// Уведомление Windows («тост»). Щелчок по нему открывает папку `open`.
 pub fn toast(title: &str, text: &str, open: &Path) {
+    let uri = format!("file:///{}", open.display().to_string().replace('\\', "/").replace(' ', "%20"));
+    toast_uri(title, text, &uri);
+}
+
+/// Уведомление Windows, щелчок по которому открывает ссылку (`https://…`, `vgd://show`).
+pub fn toast_uri(title: &str, text: &str, uri: &str) {
     // Не удалось записать своё имя — показываем от имени PowerShell, как раньше: лучше так, чем никак.
     let app_id = if register_toast_app() { TOAST_APP_ID } else { r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe" };
     let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
-    let uri = format!("file:///{}", open.display().to_string().replace('\\', "/").replace(' ', "%20"));
     let xml = format!(
         "<toast activationType=\"protocol\" launch=\"{}\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
-        esc(&uri),
+        esc(uri),
         esc(title),
         esc(text)
     );

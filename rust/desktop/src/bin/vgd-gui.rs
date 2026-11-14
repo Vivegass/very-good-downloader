@@ -22,6 +22,8 @@ use vgd::sort::{apply_plan, default_topics, load_topics, save_topics, Topics};
 
 #[path = "gui/appearance.rs"]
 mod appearance;
+#[path = "gui/update_ui.rs"]
+mod update_ui;
 
 // ---------- палитра ----------
 
@@ -382,6 +384,8 @@ enum Event {
     SpotifyDone(Result<(), String>),
     /// вход в Яндекс: код и страница (Some) или вход закончился (None)
     YandexCode(Option<(String, String)>),
+    /// обновление программы: проверка, прогресс скачивания (gui/update_ui.rs)
+    Update(update_ui::UpdEvent),
 }
 
 enum Action {
@@ -462,6 +466,8 @@ struct App {
     /// прячем на первых кадрах), при первом показе — поставить по центру
     offscreen: bool,
     hide_frames: u8,
+    /// обновление программы (gui/update_ui.rs)
+    upd: update_ui::UpdateUi,
 }
 
 impl App {
@@ -592,6 +598,7 @@ impl App {
             autostart: vgd::appinfo::autostart(),
             offscreen: background,
             hide_frames: 0,
+            upd: Default::default(),
         }
     }
 
@@ -884,6 +891,7 @@ impl App {
                     Outcome::Progress(_) => {}
                 },
                 Event::Log(m) => self.add_log(m),
+                Event::Update(e) => self.on_update_event(e),
                 Event::YandexCode(c) => {
                     if c.is_none() {
                         self.side_task = false;
@@ -1120,6 +1128,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                     ui.label(RichText::new("youtube · spotify · apple music · soundcloud · яндекс музыка · vk…").size(11.5).color(pal().faint));
                 });
                 ui.add_space(10.0);
+                self.ui_update_banner(ui);
 
                 // поле для ссылок
                 let focused_id = egui::Id::unique("urls");
@@ -1782,6 +1791,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                             self.update_ytdlp(&ctx);
                         }
                     });
+                    self.ui_update_rows(ui);
                 });
                 }
                 if !self.status.is_empty() && self.side_task {
@@ -2392,6 +2402,9 @@ impl eframe::App for App {
                 self.check_subs(None);
             }
         }
+        // Обновления — и в фоне: найдётся новая версия, пока окно в трее, — скажет уведомление.
+        self.update_start();
+        self.update_tick();
         if self.hidden {
             self.handle_events(ctx);
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
@@ -2487,6 +2500,7 @@ impl eframe::App for App {
         self.ui_sort_plan(&ctx);
         self.ui_topics(&ctx);
         self.ui_confirm_exit(&ctx);
+        self.ui_update_ask(&ctx);
         self.watch_theme_file(&ctx);
         if self.busy() || self.side_task {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -3333,8 +3347,10 @@ fn main() -> eframe::Result {
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let urls = ipc::launch_urls(args.iter().cloned());
+    // `vgd://show` — щелчок по уведомлению «доступна новая версия»: показать окно.
+    let show_req = args.iter().any(|a| a.trim().trim_end_matches('/').eq_ignore_ascii_case("vgd://show"));
     // Запуск в фоне: при входе в Windows (`--background`) или из расширения/Spotify (`vgd://…`) — без окна.
-    let background = args.iter().any(|a| a == "--background" || a.to_ascii_lowercase().starts_with("vgd:"));
+    let background = !show_req && args.iter().any(|a| a == "--background" || a.to_ascii_lowercase().starts_with("vgd:"));
     // Одна копия программы. Вторая отдаёт ссылки первой (или просит показать окно) и выходит.
     // Первая могла только что стартовать и ещё не занять порт, или как раз закрываться — пробуем ~5 с.
     if !ipc::single_instance() {

@@ -61,6 +61,39 @@ try {
     } else {
         Write-Host 'Inno Setup не найден — установщик не собран, готовая папка: rust\dist\VeryGoodDownloader'
     }
+
+    # Portable: та же папка в zip (внутри — VeryGoodDownloader\…; имена в UTF-8).
+    $release = Join-Path $root 'release'
+    New-Item -ItemType Directory -Force $release | Out-Null
+    $zip = Join-Path $release "VeryGoodDownloader-$version-portable.zip"
+    Remove-Item -Force $zip -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory($dist, $zip, [IO.Compression.CompressionLevel]::Optimal, $true)
+
+    # SHA-256 рядом с каждым ассетом: «<хэш>  <имя>». Программа сверяет скачанное обновление
+    # с полем digest из GitHub API, а если его нет — с этим файлом (без суммы не обновляется).
+    $assets = @("VeryGoodDownloader-Setup-$version.exe", "VeryGoodDownloader-$version-portable.zip") |
+        ForEach-Object { Join-Path $release $_ } | Where-Object { Test-Path $_ }
+    foreach ($a in $assets) {
+        $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $a).Hash.ToLower()
+        [IO.File]::WriteAllText("$a.sha256", "$h  $(Split-Path $a -Leaf)`n")
+    }
+    # Заметка: что приложить к релизу на GitHub.
+    $list = ($assets | ForEach-Object { $n = Split-Path $_ -Leaf; "  $n`n  $n.sha256" }) -join "`n"
+    $note = @"
+Релиз Very Good Downloader $version для Windows
+
+Тег: v$version  (Android — отдельные релизы с тегом android-v<версия>, см. rust\README.md → «Обновления»)
+Не отмечать «Set as a pre-release», если это не бета: программа предлагает пре-релизы только с галочкой «бета-версии».
+
+Приложить к релизу (Assets):
+$list
+
+Имена файлов не менять: программа ищет ассет по имени (VeryGoodDownloader-Setup-<версия>.exe,
+VeryGoodDownloader-<версия>-portable.zip). Описание релиза (markdown) показывается в окне по «что нового».
+"@
+    [IO.File]::WriteAllText((Join-Path $release "РЕЛИЗ-$version.txt"), $note, (New-Object Text.UTF8Encoding $true))
+    Write-Host "Ассеты и .sha256 — в $release, что приложить к релизу — РЕЛИЗ-$version.txt"
 }
 finally { Pop-Location }
 Get-ChildItem (Join-Path $here 'dist\VeryGoodDownloader'), (Join-Path $here 'dist\VeryGoodDownloader\bin') -File |

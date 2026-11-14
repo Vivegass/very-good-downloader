@@ -5,14 +5,21 @@
   #define AppVersion "1.11.0"
 #endif
 #define AppExe "Very Good Downloader.exe"
+; Для проверки обновления на mock-релизе (rust\tools\update-mock.ps1): своя копия, не задевающая настоящую установку.
+#ifndef AppIdGuid
+  #define AppIdGuid "6A4E2C1B-8F3D-4B7A-9C25-7E1D0F4B3A91"
+#endif
+#ifndef AppDirName
+  #define AppDirName AppName
+#endif
 
 [Setup]
-AppId={{6A4E2C1B-8F3D-4B7A-9C25-7E1D0F4B3A91}
+AppId={{{#AppIdGuid}}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppName}
-DefaultDirName={autopf}\{#AppName}
+DefaultDirName={autopf}\{#AppDirName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 ; Без прав администратора: ставится в профиль пользователя.
@@ -66,6 +73,28 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 ; Сразу после установки — предложить поставить расширение (программа откроется с выбором браузера).
 Filename: "{app}\{#AppExe}"; Parameters: "--page=extension"; Description: "Запустить и установить расширение для браузера (кнопки ↓ на сайтах)"; Flags: nowait postinstall skipifsilent
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent unchecked
+; Обновление из программы: тихая установка с /VGDRELAUNCH=window|background — запустить снова, как было
+; (окном или в трее). Без этого параметра тихая установка программу не запускает.
+Filename: "{app}\{#AppExe}"; Parameters: "{code:RelaunchArgs}"; Flags: nowait runasoriginaluser; Check: ShouldRelaunch
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
+
+[Code]
+function RelaunchMode: String;
+begin
+  Result := Lowercase(ExpandConstant('{param:VGDRELAUNCH|}'));
+end;
+
+function ShouldRelaunch: Boolean;
+begin
+  Result := WizardSilent and ((RelaunchMode = 'window') or (RelaunchMode = 'background'));
+end;
+
+function RelaunchArgs(Param: String): String;
+begin
+  if RelaunchMode = 'background' then
+    Result := '--background'
+  else
+    Result := '';
+end;

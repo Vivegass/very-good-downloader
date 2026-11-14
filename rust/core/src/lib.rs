@@ -12,5 +12,6 @@ pub mod queue;
 pub mod settings;
 pub mod sort;
 pub mod theme;
+pub mod update;
 pub mod vk;
 pub mod yandex_acc;
