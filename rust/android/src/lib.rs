@@ -679,6 +679,34 @@ pub fn vk_agent_js() -> String {
     vgd_core::vk::AGENT_JS.to_string()
 }
 
+// ---------- Spotify: весь плейлист со страницы ----------
+
+/// Страница плейлиста open.spotify.com в скрытом WebView (Kotlin) с `spotify_agent_js()`:
+/// JSON `{name, total, tracks: [{id, title, artist, album, duration, cover}]}`.
+#[uniffi::export(with_foreign)]
+pub trait SpotifyPlaylistPage: Send + Sync {
+    fn playlist(&self, id: String) -> Result<String, VgdError>;
+}
+
+struct SpotifyBridge(Arc<dyn SpotifyPlaylistPage>);
+
+impl vgd_core::music::SpotifyPage for SpotifyBridge {
+    fn playlist(&self, id: &str) -> Result<String, String> {
+        self.0.playlist(id.to_string()).map_err(|e| e.to_string())
+    }
+}
+
+#[uniffi::export]
+pub fn set_spotify_page(page: Arc<dyn SpotifyPlaylistPage>) {
+    vgd_core::music::set_spotify_page(Arc::new(SpotifyBridge(page)));
+}
+
+/// Код для страницы плейлиста Spotify (прокрутка и сбор треков).
+#[uniffi::export]
+pub fn spotify_agent_js() -> String {
+    vgd_core::music::SPOTIFY_AGENT_JS.to_string()
+}
+
 // ---------- темы ----------
 
 /// Тема для выбора в настройках: встроенная или файл из папки тем (тот же JSON, что на ПК).

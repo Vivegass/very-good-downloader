@@ -244,7 +244,7 @@ fun SettingsContent(
                     toggle("Замены — в отдельную папку", o.optBoolean("music_replace_dir"), "«_из других мест»", Icons.Rounded.DriveFileMove, Tint.GRAY, enabled = replace) { v -> save { it.put("music_replace_dir", v) } }
                     toggle("Проверять замену по звуку", o.optBoolean("music_verify", true), "Сравнение с образцом Deezer", Icons.Rounded.GraphicEq, Tint.PURPLE) { v -> save { it.put("music_verify", v) } }
                     toggle("Тексты песен", o.optBoolean("lyrics"), "LRCLIB, с таймингом — .lrc рядом", Icons.Rounded.Lyrics, Tint.TEAL) { v -> save { it.put("lyrics", v) } }
-                    nav("Ключ Spotify", value = if (hasKey) "Задан" else "Не задан", subtitle = "Без ключа — первые 100 треков плейлиста", icon = Icons.Rounded.Key, tint = Tint.GREEN) { spotify = true }
+                    nav("Ключ Spotify для альбомов", value = if (hasKey) "Задан" else "Необязательно", subtitle = "Плейлисты целиком программа берёт со страницы Spotify — ключ для них не нужен", icon = Icons.Rounded.Key, tint = Tint.GREEN) { spotify = true }
                 }
             }
             item(key = "acc") {
@@ -388,7 +388,13 @@ fun SettingsContent(
             title = { Text("Ключ Spotify") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("developer.spotify.com → Dashboard → Create app. Без ключа Spotify отдаёт только первые 100 треков плейлиста.", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "Необязательно. Плейлисты программа собирает со страницы Spotify целиком и без ключа: с февраля 2026 " +
+                            "Spotify Web API не отдаёт по ключу содержимое чужих плейлистов. Ключ помогает только с альбомами и " +
+                            "треками, и работает, лишь если у владельца приложения Spotify есть Premium. " +
+                            "developer.spotify.com → Dashboard → Create app.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     KitTextField(id, { id = it }, "Client ID", singleLine = true)
                     KitTextField(secret, { secret = it }, "Client secret", singleLine = true)
                 }

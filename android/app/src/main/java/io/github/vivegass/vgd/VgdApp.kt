@@ -7,6 +7,7 @@ class VgdApp : Application() {
         super.onCreate()
         Vgd.attach(this)
         VkAgent.attach(this)
+        SpotifyAgent.attach(this)
         Notifications.ensureChannels(this)
         Shortcuts.publish(this)
         // Распаковка Python/ffmpeg (первый запуск — несколько секунд) — сразу в фоне,

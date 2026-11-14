@@ -253,6 +253,11 @@ fn spotify(url: &str, st: &Settings, log: &dyn Fn(String)) -> Result<MusicList, 
         let name = if l.name.is_empty() { artist_of(&l) } else { l.name.clone() };
         return deezer_discography(&name, log);
     }
+    if kind == "playlist" {
+        return spotify_playlist(&id, log);
+    }
+    // Ключ — только альбомы и треки: с февраля 2026 Spotify Web API в Development Mode не отдаёт содержимое
+    // чужих плейлистов (GET /playlists/{id}/items — только свои), top-tracks исполнителя удалён.
     if !st.spotify_id.trim().is_empty() && !st.spotify_secret.trim().is_empty() {
         match spotify_api(&kind, &id, st) {
             Ok(l) => return Ok(l),
@@ -268,6 +273,88 @@ fn spotify(url: &str, st: &Settings, log: &dyn Fn(String)) -> Result<MusicList, 
         }
     }
     spotify_embed(&kind, &id)
+}
+
+/// Страница плейлиста Spotify, которую открывает программа (на Android — скрытый WebView): прокручивает список
+/// и отдаёт все треки JSON-ом `{name, total, tracks: [{id, title, artist, album, duration, cover}]}`.
+/// На ПК весь плейлист передаёт расширение браузера.
+/// Код для страницы плейлиста (прокрутка и сбор треков) — для «невидимого браузера» программы.
+pub const SPOTIFY_AGENT_JS: &str = include_str!("spotify_agent.js");
+
+pub trait SpotifyPage: Send + Sync {
+    fn playlist(&self, id: &str) -> Result<String, String>;
+}
+
+static SPOTIFY_PAGE: std::sync::RwLock<Option<std::sync::Arc<dyn SpotifyPage>>> = std::sync::RwLock::new(None);
+
+pub fn set_spotify_page(p: std::sync::Arc<dyn SpotifyPage>) {
+    *SPOTIFY_PAGE.write().unwrap_or_else(|e| e.into_inner()) = Some(p);
+}
+
+fn spotify_page() -> Option<std::sync::Arc<dyn SpotifyPage>> {
+    SPOTIFY_PAGE.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Как получить весь плейлист, если программе видны только первые 100 треков.
+fn spotify_full_hint() -> &'static str {
+    if cfg!(target_os = "android") {
+        "Spotify отдал программе только первые 100 треков, а собрать весь список со страницы не вышло — скачаю первые 100."
+    } else {
+        "Spotify отдаёт программе только первые 100 треков. Чтобы скачать плейлист целиком, откройте его в браузере \
+         и нажмите кнопку расширения «скачать плейлист»."
+    }
+}
+
+/// Плейлист: встраиваемый плеер (до 100 треков); если треков ровно 100 и есть страница-агент — весь список с неё.
+fn spotify_playlist(id: &str, log: &dyn Fn(String)) -> Result<MusicList, String> {
+    let embed = spotify_embed("playlist", id);
+    let cut = embed.as_ref().map_or(true, |l| l.tracks.len() >= 100);
+    if cut {
+        if let Some(page) = spotify_page() {
+            log("Spotify: собираю весь плейлист со страницы open.spotify.com…".into());
+            match page.playlist(id).and_then(|j| tracks_from_page(&j)) {
+                Ok(l) if !l.tracks.is_empty() => {
+                    log(format!("Spotify: со страницы — {} трек(ов).", l.tracks.len()));
+                    return Ok(l);
+                }
+                Ok(_) => log("Внимание: Spotify: на странице плейлиста нет треков.".into()),
+                Err(e) => log(format!("Внимание: Spotify: страница плейлиста: {e}")),
+            }
+        }
+    }
+    let mut l = embed?;
+    if l.tracks.len() >= 100 {
+        l.note = Some(spotify_full_hint().into());
+    }
+    Ok(l)
+}
+
+/// Ответ страницы-агента → список треков.
+fn tracks_from_page(json: &str) -> Result<MusicList, String> {
+    let v: Value = serde_json::from_str(json).map_err(|_| "непонятный ответ страницы".to_string())?;
+    if let Some(e) = v["error"].as_str() {
+        return Err(e.to_string());
+    }
+    let tracks: Vec<Track> = v["tracks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| {
+            let title = s(t, "title").trim().to_string();
+            (!title.is_empty()).then(|| Track {
+                key: format!("spotify:{}", s(t, "id")),
+                artist: s(t, "artist").trim().to_string(),
+                title,
+                album: s(t, "album"),
+                duration: t["duration"].as_f64(),
+                cover: t["cover"].as_str().filter(|c| c.starts_with("http")).map(String::from),
+                ..Default::default()
+            })
+        })
+        .collect();
+    let total = v["total"].as_u64().unwrap_or(0) as usize;
+    let note = (total > tracks.len()).then(|| format!("Со страницы Spotify собрано {} из {total} треков.", tracks.len()));
+    Ok(MusicList { name: s(&v, "name").if_empty("Spotify"), service: "Spotify".into(), tracks, note, by_album: false, single: false })
 }
 
 /// Встраиваемый плеер: без ключей, но не больше 100 треков.
@@ -331,11 +418,7 @@ fn spotify_embed(kind: &str, id: &str) -> Result<MusicList, String> {
             });
         }
     }
-    let note = (tracks.len() >= 100).then(|| {
-        "Spotify отдаёт программе только первые 100 треков. Чтобы скачать плейлист целиком, откройте его в браузере          и нажмите кнопку расширения «скачать плейлист»."
-            .to_string()
-    });
-    Ok(MusicList { name, service: "Spotify".into(), tracks, note, by_album: false, single: kind == "track" })
+    Ok(MusicList { name, service: "Spotify".into(), tracks, note: None, by_album: false, single: kind == "track" })
 }
 
 /// Название трека из oEmbed (официальный ответ для вставки плеера; исполнителя там нет).
@@ -409,31 +492,9 @@ fn spotify_api(kind: &str, id: &str, st: &Settings) -> Result<MusicList, String>
             }
             (name, false)
         }
-        "artist" => {
-            let a = get_json(&format!("{api}/artists/{id}"), &h)?;
-            let top = get_json(&format!("{api}/artists/{id}/top-tracks?market=US"), &h)?;
-            for t in top["tracks"].as_array().into_iter().flatten() {
-                tracks.extend(spotify_track(t, None, None));
-            }
-            (s(&a, "name"), false)
-        }
-        _ => {
-            let p = get_json(&format!("{api}/playlists/{id}?fields=name"), &h)?;
-            if p.get("error").is_some() {
-                return Err(s(&p["error"], "message").if_empty("плейлист недоступен"));
-            }
-            let mut next = Some(format!(
-                "{api}/playlists/{id}/tracks?limit=100&fields=next,items(track(id,name,duration_ms,artists(name),album(name,images),external_ids))"
-            ));
-            while let Some(u) = next {
-                let page = get_json(&u, &h)?;
-                for it in page["items"].as_array().into_iter().flatten() {
-                    tracks.extend(spotify_track(&it["track"], None, None));
-                }
-                next = page["next"].as_str().map(String::from);
-            }
-            (s(&p, "name"), false)
-        }
+        // Плейлисты и исполнители через API больше не берём (февраль 2026): плейлист — плеер и страница,
+        // исполнитель — дискография из Deezer.
+        _ => return Err("плейлисты и исполнители Spotify через ключ недоступны".into()),
     };
     Ok(MusicList { name, service: "Spotify".into(), tracks, note: None, by_album: false, single })
 }
@@ -1091,6 +1152,21 @@ mod tests {
         assert_eq!(l.tracks[0].source.as_deref(), Some("https://cs1.vkuseraudio.net/s/v1/ac/x/index.m3u8?siren=1"));
         assert_eq!(l.tracks[0].cover.as_deref(), Some("https://sun9.userapi.com/c.jpg"));
         assert_eq!(l.tracks[1].source, None); // нет ссылки — программа ищет замену
+    }
+
+    #[test]
+    fn spotify_page_tracks() {
+        let l = tracks_from_page(
+            r#"{"name":"All Out 80s","total":3,"tracks":[{"id":"a1","title":"Africa","artist":"TOTO","album":"Toto IV","duration":295},
+               {"id":"b2","title":"Holiday","artist":"Madonna","duration":null},{"id":"c3","title":""}]}"#,
+        )
+        .unwrap();
+        assert_eq!(l.name, "All Out 80s");
+        assert_eq!(l.tracks.len(), 2);
+        assert_eq!(l.tracks[0].key, "spotify:a1");
+        assert_eq!(l.tracks[0].duration, Some(295.0));
+        assert!(l.note.is_some(), "собрано меньше, чем в заголовке, — сказать об этом");
+        assert!(tracks_from_page(r#"{"error":"нет списка"}"#).is_err());
     }
 
     #[test]

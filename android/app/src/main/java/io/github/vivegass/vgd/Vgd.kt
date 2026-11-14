@@ -60,6 +60,7 @@ object Vgd {
                 val paths = unpackTools(app)
                 io.github.vivegass.vgd.core.init(paths)
                 io.github.vivegass.vgd.core.setVkSearcher(VkAgent)
+                io.github.vivegass.vgd.core.setSpotifyPage(SpotifyAgent)
                 val c = Core(listener)
                 core = c
                 _ready.value = ""
