@@ -398,7 +398,10 @@ enum Action {
     EditOpts(u64),
     Remove(u64),
     Retry(u64),
-    Reveal(String),
+    /// «показать в папке»: выделить главный файл в Проводнике (плейлист — открыть его папку)
+    Reveal(Vec<String>),
+    /// щелчок по названию готовой загрузки: открыть файл программой по умолчанию (плейлист — папку)
+    Open(Vec<String>),
 }
 
 struct App {
@@ -734,7 +737,21 @@ impl App {
                 self.q.retry(id);
                 self.after_sync();
             }
-            Action::Reveal(f) => reveal(Path::new(&f)),
+            Action::Reveal(files) => self.go_to_files(&files, false),
+            Action::Open(files) => self.go_to_files(&files, true),
+        }
+    }
+
+    /// Показать (`open == false`) или открыть скачанное; файла нет — его папка, нет и папки — в журнал.
+    fn go_to_files(&mut self, files: &[String], open: bool) {
+        match vgd::opener::target(files) {
+            vgd::opener::Target::File(f) if open => open_path(&f),
+            vgd::opener::Target::File(f) => reveal(&f),
+            vgd::opener::Target::Folder(d) => open_path(&d),
+            vgd::opener::Target::Missing(m) => {
+                self.add_log(format!("Ошибка: {m}"));
+                self.status = m;
+            }
         }
     }
 
@@ -3020,8 +3037,22 @@ fn job_card(ui: &mut egui::Ui, j: &Job, first: bool, last: bool, actions: &mut V
                 ui.allocate_ui_with_layout(Vec2::new(title_w, 20.0), Layout::left_to_right(Align::Center), |ui| {
                     ui.set_width(title_w);
                     let tcolor = if j.state == State::Cancelled { pal().faint } else { pal().text };
-                    ui.add(egui::Label::new(RichText::new(&j.title).size(13.5).color(tcolor)).truncate())
-                        .on_hover_text(&j.url);
+                    // готово — щелчок по названию открывает файл (плейлист — папку)
+                    let openable = j.state == State::Done && !j.files.is_empty();
+                    let label = egui::Label::new(RichText::new(&j.title).size(13.5).color(tcolor)).truncate();
+                    if openable {
+                        let tip = if vgd::opener::is_collection(&j.files) { "открыть папку" } else { "открыть файл" };
+                        let r = ui.add(label.sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("{tip}\n{}", j.url));
+                        if r.hovered() {
+                            let y = r.rect.bottom();
+                            ui.painter().line_segment([egui::pos2(r.rect.left(), y), egui::pos2(r.rect.right(), y)], Stroke::new(1.0, pal().muted));
+                        }
+                        if r.clicked() {
+                            actions.push(Action::Open(j.files.clone()));
+                        }
+                    } else {
+                        ui.add(label).on_hover_text(&j.url);
+                    }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     match j.state {
@@ -3060,9 +3091,10 @@ fn job_card(ui: &mut egui::Ui, j: &Job, first: bool, last: bool, actions: &mut V
                             if icon_button(ui, I_RETRY, "скачать заново (уже скачанное пропустится)").clicked() {
                                 actions.push(Action::Retry(j.id));
                             }
-                            if let Some(f) = j.files.first() {
-                                if icon_button(ui, I_FOLDER, "показать в папке").clicked() {
-                                    actions.push(Action::Reveal(f.clone()));
+                            if !j.files.is_empty() {
+                                let tip = if vgd::opener::is_collection(&j.files) { "открыть папку с файлами" } else { "показать в папке" };
+                                if icon_button(ui, I_FOLDER, tip).clicked() {
+                                    actions.push(Action::Reveal(j.files.clone()));
                                 }
                             }
                         }

@@ -5,6 +5,7 @@ pub use vgd_core::{downloader, fingerprint, http, media, music, net, queue, sett
 
 pub mod appinfo;
 pub mod ipc;
+pub mod opener;
 pub mod spotify_app;
 pub mod updater;
 pub mod vk_web;
