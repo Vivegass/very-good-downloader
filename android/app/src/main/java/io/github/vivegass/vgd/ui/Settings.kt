@@ -54,6 +54,8 @@ import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.People
 import androidx.compose.material.icons.rounded.PlaylistPlay
+import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.SlowMotionVideo
 import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material.icons.rounded.Subtitles
@@ -68,6 +70,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -85,6 +88,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import io.github.vivegass.vgd.BuildConfig
 import io.github.vivegass.vgd.LoginActivity
 import io.github.vivegass.vgd.Vgd
+import io.github.vivegass.vgd.text
 import io.github.vivegass.vgd.VkAgent
 import io.github.vivegass.vgd.core.MovePlan
 import io.github.vivegass.vgd.core.Topic
@@ -122,6 +126,9 @@ data class SettingsEnv(
     /** темы с ПК: ключ, название, цвет акцента */
     val themes: List<Triple<String, String, Color>> = emptyList(),
     val version: String = "",
+    val appVersion: String = "",
+    val updAuto: Boolean = true,
+    val updBeta: Boolean = false,
 )
 
 /** Действия настроек (на телефоне — системные окна и ядро; в скриншот-тестах — ничего). */
@@ -138,6 +145,8 @@ interface SettingsHandler {
     fun check() {}
     fun sortFolder() {}
     fun topics() {}
+    fun checkUpdate() {}
+    fun updatePrefs(auto: Boolean, beta: Boolean) {}
 }
 
 private val HEIGHTS = listOf(0 to "Максимальное", 2160 to "2160p (4K)", 1440 to "1440p", 1080 to "1080p", 720 to "720p", 480 to "480p")
@@ -307,6 +316,27 @@ fun SettingsContent(
                     ) { h.battery() }
                 }
             }
+            item(key = "update") {
+                val ust by io.github.vivegass.vgd.Updater.state.collectAsState()
+                Group("Обновления", footer = "С GitHub (релизы android-v…), файл сверяется по SHA-256. Ставится поверх, если APK подписан тем же ключом.") {
+                    nav(
+                        "Проверить обновления",
+                        value = when (val u = ust) {
+                            is io.github.vivegass.vgd.Updater.State.Checking -> "Проверяю…"
+                            is io.github.vivegass.vgd.Updater.State.Latest -> "Последняя версия"
+                            is io.github.vivegass.vgd.Updater.State.Found -> "Есть ${u.info.version}"
+                            is io.github.vivegass.vgd.Updater.State.Downloading -> "Скачиваю…"
+                            is io.github.vivegass.vgd.Updater.State.Error -> "Ошибка"
+                            else -> "Версия ${env.appVersion}"
+                        },
+                        subtitle = (ust as? io.github.vivegass.vgd.Updater.State.Error)?.message,
+                        icon = Icons.Rounded.SystemUpdate,
+                        tint = Tint.BLUE,
+                    ) { h.checkUpdate() }
+                    toggle("Проверять автоматически", env.updAuto, "Раз в 6 часов", icon = Icons.Rounded.Schedule, tint = Tint.GREEN) { h.updatePrefs(it, env.updBeta) }
+                    toggle("Бета-версии", env.updBeta, "Предлагать предварительные выпуски", icon = Icons.Rounded.Science, tint = Tint.ORANGE) { h.updatePrefs(env.updAuto, it) }
+                }
+            }
             item(key = "ytdlp") {
                 Group("yt-dlp", footer = "YouTube регулярно ломает старые версии yt-dlp — если видео перестали качаться, обновите.") {
                     nav(if (env.updating) "Обновляю…" else "Обновить yt-dlp", value = env.ytdlp, icon = Icons.Rounded.SystemUpdate, tint = Tint.BLUE, enabled = !env.updating) { h.updateYtdlp() }
@@ -429,14 +459,18 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
                 val themes = runCatching {
                     themeList().map { t -> Triple(t.key, t.name, runCatching { schemeOfTheme(t.key, dark).primary }.getOrDefault(Color.Gray)) }
                 }.getOrDefault(emptyList())
+                val up = runCatching { io.github.vivegass.vgd.core.updatePrefs() }.getOrNull()
                 env = env.copy(
+                    appVersion = BuildConfig.VERSION_NAME,
+                    updAuto = up?.auto ?: true,
+                    updBeta = up?.beta ?: false,
                     ytdlp = ytdlpVersion() ?: "не найден",
                     yaLogged = runCatching { yandexLoggedIn() }.getOrDefault(false),
                     themes = themes,
                     version = "Very Good Downloader для Android ${BuildConfig.VERSION_NAME} · ядро ${io.github.vivegass.vgd.core.version()}\n${ctx.packageName}",
                 )
             } catch (e: Throwable) {
-                env = env.copy(ytdlp = "ошибка: ${e.message}")
+                env = env.copy(ytdlp = "ошибка: ${e.text()}")
             }
         }
     }
@@ -453,7 +487,7 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
                 saveSettingsJson(o.toString())
                 Vgd.coreOrNull()?.reloadSettings()
             } catch (e: Throwable) {
-                Vgd.addLog("Ошибка: настройки: ${e.message}")
+                Vgd.addLog("Ошибка: настройки: ${e.text()}")
             }
         }
     }
@@ -479,7 +513,7 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
             useCookies()
             Vgd.addLog("YouTube: cookies.txt загружен")
         } catch (e: Exception) {
-            Vgd.addLog("Ошибка: cookies.txt: ${e.message}")
+            Vgd.addLog("Ошибка: cookies.txt: ${e.text()}")
         }
     }
     val handler = object : SettingsHandler {
@@ -525,7 +559,7 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
                         }
                     }
                 } catch (e: Throwable) {
-                    Vgd.addLog("Ошибка: вход в Яндекс: ${e.message}")
+                    Vgd.addLog("Ошибка: вход в Яндекс: ${e.text()}")
                 }
                 env = env.copy(yaCode = null)
                 if (env.yaLogged) saveNow { it.put("yandex_acc", true) }
@@ -538,7 +572,7 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
                 val v = try {
                     io.github.vivegass.vgd.core.updateYtdlp()
                 } catch (e: Throwable) {
-                    Vgd.addLog("Ошибка: обновление yt-dlp: ${e.message}")
+                    Vgd.addLog("Ошибка: обновление yt-dlp: ${e.text()}")
                     ytdlpVersion() ?: "?"
                 }
                 env = env.copy(updating = false, ytdlp = v)
@@ -556,7 +590,7 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
                         io.github.vivegass.vgd.core.diagnose(url).forEach { Vgd.addLog(it) }
                     }
                 } catch (e: Throwable) {
-                    Vgd.addLog("Ошибка: проверка: ${e.message}")
+                    Vgd.addLog("Ошибка: проверка: ${e.text()}")
                 }
                 env = env.copy(checking = false)
             }
@@ -572,7 +606,7 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
                         null
                     }
                 } catch (e: Throwable) {
-                    Vgd.addLog("Ошибка: разложить: ${e.message}")
+                    Vgd.addLog("Ошибка: разложить: ${e.text()}")
                     null
                 }
             }
@@ -580,6 +614,14 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
 
         override fun topics() {
             topicsOpen = true
+        }
+
+        override fun checkUpdate() = io.github.vivegass.vgd.Updater.check(ctx, manual = true)
+
+        override fun updatePrefs(auto: Boolean, beta: Boolean) {
+            env = env.copy(updAuto = auto, updBeta = beta)
+            scope.launch(Dispatchers.IO) { io.github.vivegass.vgd.core.setUpdatePrefs(auto, beta) }
+            io.github.vivegass.vgd.Updater.schedule(ctx, auto)
         }
     }
     SettingsContent(json, env, handler, style, colors, onStyle, onColors, nav)
@@ -656,7 +698,7 @@ private fun TopicsDialog(onClose: () -> Unit) {
                 try {
                     saveTopics(rows.map { (n, k) -> Topic(n, k.split(',').map { it.trim() }.filter { it.isNotEmpty() }) })
                 } catch (e: Throwable) {
-                    Vgd.addLog("Ошибка: категории: ${e.message}")
+                    Vgd.addLog("Ошибка: категории: ${e.text()}")
                 }
                 onClose()
             }, kind = Btn.TEXT)

@@ -13,6 +13,12 @@ import io.github.vivegass.vgd.ui.Style
 import io.github.vivegass.vgd.ui.VgdTheme
 
 class MainActivity : ComponentActivity() {
+    override fun onResume() {
+        super.onResume()
+        // вернулись из «Установки неизвестных приложений» — поставить обновление
+        Updater.resumeInstall(this)
+    }
+
     private var style by mutableStateOf(Style.AUTO)
     private var colors by mutableStateOf(Palette.AUTO)
 

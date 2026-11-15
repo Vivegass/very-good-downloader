@@ -5,3 +5,8 @@ local.properties
 .idea/
 .kotlin/
 /app/release/
+
+# свой ключ подписи — никогда в git
+keystore.properties
+*.jks
+*.keystore

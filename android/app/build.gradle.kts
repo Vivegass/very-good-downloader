@@ -19,10 +19,25 @@ android {
         applicationId = "io.github.vivegass.vgd"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.4.0"
+        // -Pvgd.versionName=0.5.1 -Pvgd.versionCode=6 — проверка обновления поверх (mock-релиз)
+        versionCode = (project.findProperty("vgd.versionCode") as String?)?.toInt() ?: 5
+        versionName = (project.findProperty("vgd.versionName") as String?) ?: "0.5.0"
         ndk { abiFilters += abis }
     }
+
+    // Свой ключ подписи для release (этап 7): android/keystore.properties (в git не кладётся) —
+    //   storeFile=D:/keys/vgd-release.jks  storePassword=…  keyAlias=vgd  keyPassword=…
+    // Обновление ставится поверх только при том же ключе: ключ нужен ДО первого публичного APK и терять его нельзя.
+    val ksFile = rootProject.file("keystore.properties")
+    val releaseKey = if (ksFile.isFile) {
+        val p = Properties().apply { ksFile.inputStream().use { load(it) } }
+        signingConfigs.create("release") {
+            storeFile = file(p.getProperty("storeFile"))
+            storePassword = p.getProperty("storePassword")
+            keyAlias = p.getProperty("keyAlias")
+            keyPassword = p.getProperty("keyPassword")
+        }
+    } else null
 
     buildTypes {
         debug {
@@ -30,8 +45,8 @@ android {
         }
         release {
             isMinifyEnabled = false
-            // Свой ключ подписи — этап 7 (не потерять!). Пока release подписывается debug-ключом.
-            signingConfig = signingConfigs.getByName("debug")
+            // Без keystore.properties — debug-ключ этого ПК (только для проверки, не для публикации).
+            signingConfig = releaseKey ?: signingConfigs.getByName("debug")
         }
     }
 

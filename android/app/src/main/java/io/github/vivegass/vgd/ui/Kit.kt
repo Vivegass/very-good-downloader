@@ -284,7 +284,7 @@ fun VgdNavBar(items: List<NavItem>, selected: Int, onSelect: (Int) -> Unit) {
         }
         // iOS 26: плавающая «стеклянная» капсула, выбранная вкладка — светлая капсула внутри, цвет — systemBlue
         Kind.IOS -> Box(
-            Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars).padding(start = 20.dp, end = 20.dp, bottom = 6.dp, top = 6.dp),
+            Modifier.fillMaxWidth().background(fadeUnder()).windowInsetsPadding(WindowInsets.navigationBars).padding(start = 20.dp, end = 20.dp, bottom = 6.dp, top = 6.dp),
             contentAlignment = Alignment.Center,
         ) {
             Surface(
@@ -333,7 +333,7 @@ fun VgdNavBar(items: List<NavItem>, selected: Int, onSelect: (Int) -> Unit) {
             }
         }
         // HyperOS: широкая плавающая полупрозрачная панель, выбранное — синим
-        Kind.HYPER -> Box(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars).padding(horizontal = 14.dp, vertical = 8.dp)) {
+        Kind.HYPER -> Box(Modifier.fillMaxWidth().background(fadeUnder()).windowInsetsPadding(WindowInsets.navigationBars).padding(horizontal = 14.dp, vertical = 8.dp)) {
             Surface(
                 shape = RoundedCornerShape(28.dp),
                 color = c.surfaceContainer.copy(alpha = 0.97f),
@@ -373,6 +373,16 @@ fun VgdNavBar(items: List<NavItem>, selected: Int, onSelect: (Int) -> Unit) {
             }
         }
     }
+}
+
+/**
+ * Под плавающей панелью содержимое уходит в фон страницы (как «край прокрутки» iOS 26): текст списка
+ * не просвечивает вокруг и под капсулой, а последний пункт списка всё равно виден над панелью (отступ снизу).
+ */
+@Composable
+private fun fadeUnder(): androidx.compose.ui.graphics.Brush {
+    val p = pageColor()
+    return androidx.compose.ui.graphics.Brush.verticalGradient(0f to p.copy(alpha = 0f), 0.35f to p.copy(alpha = 0.92f), 1f to p)
 }
 
 // ---------- группы и строки ----------

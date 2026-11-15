@@ -1120,6 +1120,8 @@ impl Downloader {
                     && !m.contains("initial data")
                     // прямые ссылки на звук (VK): название всё равно берётся из списка
                     && !m.contains("failed to obtain \"title\"")
+                    // SoundCloud: оригинал (wav/flac) — только с входом; обычный звук качается и так
+                    && !m.contains("Original download format is only available")
                 {
                     me.log(format!("Предупреждение: {m}"));
                 }

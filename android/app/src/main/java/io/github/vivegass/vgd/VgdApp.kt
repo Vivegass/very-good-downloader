@@ -10,6 +10,7 @@ class VgdApp : Application() {
         SpotifyAgent.attach(this)
         Notifications.ensureChannels(this)
         Shortcuts.publish(this)
+        Updater.schedule(this, true)
         // Распаковка Python/ffmpeg (первый запуск — несколько секунд) — сразу в фоне,
         // чтобы к первой ссылке всё было готово.
         Thread {

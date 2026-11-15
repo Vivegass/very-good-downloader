@@ -56,6 +56,9 @@ D:\Android\Sdk\platform-tools\adb.exe install -r -g app\build\outputs\apk\debug\
 Без `-dns-server` у эмулятора на Windows не работает DNS (yt-dlp: «No address associated with hostname»).
 Скриншоты экранов во всех стилях без эмулятора: `.\gradlew.bat testDebugUnitTest --tests *ScreensTest* -Pvgd.screens=<папка>`.
 
+Обновление без настоящего релиза: `android/tools/update-mock.py` (описание в начале файла).
+Свой ключ подписи release: `android/keystore.properties` (не в git), см. PLAN.md «Версия 0.5».
+
 ## Установка на телефон
 
 1. На телефоне: «Настройки → О телефоне → Номер сборки» 7 раз → «Для разработчиков» → «Отладка по USB».
@@ -76,6 +79,8 @@ Debug-сборка ставится как отдельное приложени
 | `DownloadService.kt` | служба переднего плана `dataSync`: прогресс, WakeLock + WifiLock, `onTimeout` (Android 15) → пауза |
 | `Notifications.kt` | уведомления прогресса и «скачано / не скачалось» |
 | `Shortcuts.kt`, `res/xml/shortcuts.xml` | ярлыки «Видео» / «Звук»: Direct Share в «Поделиться» и на значке приложения |
+| `Updater.kt` | обновление: проверка релизов `android-v…`, плашка, скачивание с уведомлением, PackageInstaller, `UpdateWorker` (6 ч) |
+| `ui/Files.kt` | открыть скачанный файл (FileProvider) / папку в «Файлах» |
 | `SpotifyAgent.kt` | весь плейлист Spotify со страницы (скрытый WebView + `spotify_agent.js` ядра; API Spotify с 2026 чужих плейлистов не отдаёт) |
 | `VkAgent.kt`, `LoginActivity.kt` | VK: скрытый WebView с `vk_agent.js` (поиск), окно входа VK / YouTube (→ `cookies.txt`) |
 | `SubsWorker.kt` | подписки раз в 6 ч по Wi-Fi (WorkManager, служба dataSync) |

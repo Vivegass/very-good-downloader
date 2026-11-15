@@ -265,11 +265,16 @@ impl Core {
         }
         let core = Arc::new(Core { runner, listener });
         core.notify();
+        // у восстановленных карточек без названия — название и превью сразу
+        let bare: Vec<u64> = core.runner.with(|q| q.jobs.iter().filter(|j| j.title.starts_with("http")).map(|j| j.id).collect());
+        if !bare.is_empty() {
+            core.clone().quick_info(bare);
+        }
         core
     }
 
     /// Поставить ссылку с параметрами (JSON `JobOpts`: from, to, audio_only, split_tracks, preset, over) и запустить.
-    pub fn add_with(&self, url: String, opts_json: String) -> Result<u64, VgdError> {
+    pub fn add_with(self: Arc<Self>, url: String, opts_json: String) -> Result<u64, VgdError> {
         let opts: JobOpts = serde_json::from_str(&opts_json).map_err(|e| fail(format!("параметры: {e}")))?;
         let id = self.runner.with(|q| {
             let id = q.add(url.trim().to_string(), opts, None, None);
@@ -277,6 +282,7 @@ impl Core {
             id
         });
         self.notify();
+        self.clone().quick_info(vec![id]);
         Ok(id)
     }
 
@@ -309,7 +315,7 @@ impl Core {
     }
 
     /// Поставить ссылку в очередь и запустить. `audio_only` — только звук.
-    pub fn add(&self, url: String, audio_only: bool) -> u64 {
+    pub fn add(self: Arc<Self>, url: String, audio_only: bool) -> u64 {
         let id = self.runner.with(|q| {
             let opts = JobOpts { audio_only, ..Default::default() };
             let id = q.add(url.trim().to_string(), opts, None, None);
@@ -317,6 +323,7 @@ impl Core {
             id
         });
         self.notify();
+        self.clone().quick_info(vec![id]);
         id
     }
 
@@ -402,6 +409,33 @@ impl Core {
 }
 
 impl Core {
+    /// Название и превью карточки сразу, не дожидаясь очереди: лёгкий запрос oEmbed (YouTube, SoundCloud, Vimeo,
+    /// Spotify…). Пока названия нет — на карточке ссылка. В отдельной нити, ошибки молча.
+    fn quick_info(self: Arc<Self>, ids: Vec<u64>) {
+        std::thread::spawn(move || {
+            for id in ids {
+                let Some(url) = self.runner.with(|q| q.job(id).filter(|j| j.title.starts_with("http")).map(|j| j.url.clone())) else { continue };
+                let Some((title, thumb)) = oembed(&url) else { continue };
+                let changed = self.runner.with(|q| {
+                    let Some(j) = q.jobs.iter_mut().find(|j| j.id == id) else { return false };
+                    let mut c = false;
+                    if j.title.starts_with("http") && !title.is_empty() {
+                        j.title = title.clone();
+                        c = true;
+                    }
+                    if j.thumb.is_empty() && !thumb.is_empty() {
+                        j.thumb = thumb.clone();
+                        c = true;
+                    }
+                    c
+                });
+                if changed {
+                    self.notify();
+                }
+            }
+        });
+    }
+
     /// Изменение не от нити загрузки (пауза, порядок) — тоже сообщить экрану.
     fn notify(&self) {
         let jobs = self.runner.with(|q| {
@@ -410,6 +444,144 @@ impl Core {
         });
         self.listener.on_jobs(jobs);
     }
+}
+
+/// (название, превью) по oEmbed сайта — без yt-dlp, одним коротким запросом.
+fn oembed(url: &str) -> Option<(String, String)> {
+    let u = url.to_ascii_lowercase();
+    let enc: String = url.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    let api = if u.contains("youtube.com/") || u.contains("youtu.be/") {
+        format!("https://www.youtube.com/oembed?format=json&url={enc}")
+    } else if u.contains("soundcloud.com/") {
+        format!("https://soundcloud.com/oembed?format=json&url={enc}")
+    } else if u.contains("vimeo.com/") {
+        format!("https://vimeo.com/api/oembed.json?url={enc}")
+    } else if u.contains("open.spotify.com/") {
+        format!("https://open.spotify.com/oembed?url={enc}")
+    } else {
+        return None;
+    };
+    let v = vgd_core::http::get(&api).timeout(12).retries(1).json().ok()?;
+    let title = v["title"].as_str().unwrap_or("").trim().to_string();
+    let thumb = v["thumbnail_url"].as_str().unwrap_or("").to_string();
+    (!title.is_empty() || !thumb.is_empty()).then_some((title, thumb))
+}
+
+// ---------- обновление программы (GitHub Releases, теги android-v…) ----------
+
+use vgd_core::update::{self, Platform, Prefs, Release};
+
+/// Найденное обновление (копия `update::Release` для Kotlin).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub tag: String,
+    pub title: String,
+    /// что нового (markdown)
+    pub notes: String,
+    pub page_url: String,
+    pub published: String,
+    pub prerelease: bool,
+    pub asset_name: String,
+    pub asset_url: String,
+    pub size: u64,
+    pub sha256: String,
+    pub sha256_url: String,
+}
+
+impl From<Release> for UpdateInfo {
+    fn from(r: Release) -> Self {
+        UpdateInfo {
+            version: r.version, tag: r.tag, title: r.title, notes: r.notes, page_url: r.page_url, published: r.published,
+            prerelease: r.prerelease, asset_name: r.asset_name, asset_url: r.asset_url, size: r.size, sha256: r.sha256,
+            sha256_url: r.sha256_url,
+        }
+    }
+}
+
+impl From<UpdateInfo> for Release {
+    fn from(r: UpdateInfo) -> Self {
+        Release {
+            version: r.version, tag: r.tag, title: r.title, notes: r.notes, page_url: r.page_url, published: r.published,
+            prerelease: r.prerelease, asset_name: r.asset_name, asset_url: r.asset_url, size: r.size, sha256: r.sha256,
+            sha256_url: r.sha256_url,
+        }
+    }
+}
+
+/// «Проверять автоматически», «бета-версии», пропущенная версия (`<данные>/update.json`).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct UpdatePrefs {
+    pub auto: bool,
+    pub beta: bool,
+    pub skip: String,
+    pub last_check: u64,
+}
+
+#[uniffi::export]
+pub fn update_prefs() -> UpdatePrefs {
+    let p = Prefs::load();
+    UpdatePrefs { auto: p.auto, beta: p.beta, skip: p.skip, last_check: p.last_check }
+}
+
+#[uniffi::export]
+pub fn set_update_prefs(auto: bool, beta: bool) {
+    let mut p = Prefs::load();
+    p.auto = auto;
+    p.beta = beta;
+    p.save();
+}
+
+/// «Пропустить эту версию».
+#[uniffi::export]
+pub fn update_skip(version: String) {
+    let mut p = Prefs::load();
+    p.skip = version;
+    p.save();
+}
+
+/// Пора проверять автоматически (включено и прошло 6 ч).
+#[uniffi::export]
+pub fn update_due() -> bool {
+    Prefs::load().due(update::now())
+}
+
+/// Проверить релизы `android-v…`. Some — есть новее `current`; результат запоминается (плашка без сети).
+#[uniffi::export]
+pub fn update_check(current: String) -> Result<Option<UpdateInfo>, VgdError> {
+    let mut p = Prefs::load();
+    let found = update::check_str(&current, Platform::Android, p.beta).map_err(fail)?;
+    p.record(update::now(), found.as_ref());
+    p.save();
+    Ok(found.map(UpdateInfo::from))
+}
+
+/// Найденное раньше и не пропущенное обновление — показать без новой проверки.
+#[uniffi::export]
+pub fn update_pending(current: String) -> Option<UpdateInfo> {
+    let v = update::Version::parse(&current)?;
+    Prefs::load().pending(&v).cloned().map(UpdateInfo::from)
+}
+
+/// Прогресс скачивания обновления. false — отменить (недокачанное останется для докачки).
+#[uniffi::export(with_foreign)]
+pub trait UpdateProgress: Send + Sync {
+    fn on_progress(&self, done: u64, total: u64) -> bool;
+}
+
+/// Скачать APK в `dir` с докачкой и проверкой размера и SHA-256. Возвращает путь к файлу.
+#[uniffi::export]
+pub fn update_download(info: UpdateInfo, dir: String, progress: Arc<dyn UpdateProgress>) -> Result<String, VgdError> {
+    let rel: Release = info.into();
+    let p = update::download(&rel, std::path::Path::new(&dir), &mut |d, t| progress.on_progress(d, t)).map_err(fail)?;
+    Ok(p.to_string_lossy().into_owned())
+}
+
+/// Только для отладки (debug-сборка): адрес списка релизов вместо GitHub (`VGD_UPDATE_URL`, mock-сервер).
+#[uniffi::export]
+pub fn set_update_url(url: String) {
+    // SAFETY: вызывается один раз при запуске, до нитей загрузок и проверки обновлений.
+    unsafe { std::env::set_var(update::ENV_URL, url) };
 }
 
 // ---------- очередь между запусками ----------
@@ -859,5 +1031,29 @@ mod tests {
         assert_eq!(yt.program, PathBuf::from("/lib/libpython.so"));
         assert_eq!(yt.prefix, ["/nb/yt-dlp", "--ffmpeg-location", "/lib/libffmpeg.so", "--js-runtimes", "quickjs:/lib/libqjs.so"]);
         assert_eq!(p.env, [("PYTHONHOME".to_string(), "/py/usr".to_string())]);
+    }
+}
+
+#[cfg(test)]
+mod live_update {
+    /// `VGD_UPDATE_URL=http://127.0.0.1:8767/releases cargo test -p vgd-android live_update -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn mock_download() {
+        let found = super::update_check("0.5.0".into()).unwrap().expect("нет обновления");
+        println!("{} {} {}", found.version, found.size, found.sha256);
+        struct P;
+        impl super::UpdateProgress for P {
+            fn on_progress(&self, d: u64, t: u64) -> bool {
+                if d % (8 << 20) < 65536 {
+                    println!("{d}/{t}");
+                }
+                true
+            }
+        }
+        let dir = std::env::temp_dir().join("vgd-upd-test");
+        let r = super::update_download(found, dir.to_string_lossy().into_owned(), std::sync::Arc::new(P));
+        println!("{r:?}");
+        assert!(r.is_ok());
     }
 }

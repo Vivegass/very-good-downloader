@@ -41,7 +41,7 @@ class SubsWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             }
             Result.success()
         } catch (e: Throwable) {
-            Vgd.addLog("Ошибка: подписки по расписанию: ${e.message}")
+            Vgd.addLog("Ошибка: подписки по расписанию: ${e.text()}")
             Result.retry()
         }
     }

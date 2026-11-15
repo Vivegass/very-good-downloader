@@ -47,6 +47,8 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.IosShare
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MoreVert
@@ -100,6 +102,7 @@ import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import io.github.vivegass.vgd.DownloadService
+import io.github.vivegass.vgd.Updater
 import io.github.vivegass.vgd.Vgd
 import io.github.vivegass.vgd.core.JobInfo
 import io.github.vivegass.vgd.core.JobState
@@ -225,7 +228,10 @@ private fun DownloadScreen(nav: @Composable () -> Unit) {
         }.getOrDefault(emptyList())
     }
     val actions = remember { CoreActions(ctx.applicationContext) }
+    val update by Updater.state.collectAsState()
+    LaunchedEffect(Unit) { Updater.restore() }
     DownloadContent(
+        update = update,
         jobs = jobs,
         ready = ready,
         allFiles = allFiles,
@@ -288,6 +294,7 @@ fun DownloadContent(
     onAllFiles: () -> Unit,
     initialText: String = "",
     initialAudio: Boolean = false,
+    update: Updater.State = Updater.State.Idle,
 ) {
     val ctx = LocalContext.current
     val st = LocalVgdStyle.current
@@ -321,6 +328,9 @@ fun DownloadContent(
             }
         }
     }
+    // Появилась плашка обновления — показать её (список мог стоять на поле ссылки).
+    val hasBanner = update is Updater.State.Found || update is Updater.State.Error || update is Updater.State.NeedPermission
+    LaunchedEffect(hasBanner) { if (hasBanner && listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0) }
     // Ядро прислало новый порядок — локальный больше не нужен.
     LaunchedEffect(jobs) { if (dd.key == null) order = null }
     val shown = (order?.let { o -> o.mapNotNull { id -> jobs.firstOrNull { it.id == id } } + jobs.filter { it.id !in o } } ?: jobs)
@@ -363,6 +373,9 @@ fun DownloadContent(
             verticalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
+            if (update !is Updater.State.Idle && update !is Updater.State.Latest && update !is Updater.State.Checking) {
+                item(key = "update") { UpdateBanner(update) }
+            }
             item(key = "input") {
                 KitCard(Modifier.fillMaxWidth().padding(horizontal = pad)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -475,7 +488,9 @@ fun DownloadContent(
                         .then(if (lifted) Modifier else Modifier.animateItem()),
                 ) {
                     SwipeToRemove(onRemove = { remove(j) }) {
-                        JobCard(j, actions, lifted, onRemove = { remove(j) })
+                        JobCard(j, actions, lifted, onRemove = { remove(j) }, onMissing = {
+                            scope.launch { snack.showSnackbar("Файл перемещён или удалён") }
+                        })
                     }
                 }
             }
@@ -577,14 +592,28 @@ private fun cardTitle(j: JobInfo): String {
 }
 
 @Composable
-fun JobCard(j: JobInfo, actions: QueueActions, lifted: Boolean, onRemove: () -> Unit) {
+fun JobCard(j: JobInfo, actions: QueueActions, lifted: Boolean, onRemove: () -> Unit, onMissing: () -> Unit = {}) {
     val st = LocalVgdStyle.current
     val c = MaterialTheme.colorScheme
     val ctx = LocalContext.current
     val pf = platformOf(j.url, j.audioOnly)
     val square = pf.music || j.audioOnly
     var menu by remember { mutableStateOf(false) }
-    KitCard(Modifier.fillMaxWidth().padding(horizontal = cardPad()).then(if (lifted) Modifier.shadow(12.dp, RoundedCornerShape(st.groupRadius)) else Modifier)) {
+    // Готовая карточка: нажатие — открыть файл (у плейлиста — папку), «⋮» → «Перейти к папке».
+    val openMain: (() -> Unit)? = if (j.state == JobState.DONE && j.files.isNotEmpty()) {
+        {
+            val ok = if (j.files.count { val m = Files.mime(java.io.File(it)); m.startsWith("video/") || m.startsWith("audio/") } > 1) {
+                Files.folder(j.files)?.let { Files.openFolder(ctx, it) } ?: false
+            } else {
+                Files.main(j.files)?.let { Files.openFile(ctx, it) } ?: false
+            }
+            if (!ok) onMissing()
+        }
+    } else null
+    KitCard(
+        Modifier.fillMaxWidth().padding(horizontal = cardPad()).then(if (lifted) Modifier.shadow(12.dp, RoundedCornerShape(st.groupRadius)) else Modifier),
+        onClick = openMain,
+    ) {
         Row(Modifier.padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Thumb(thumbFor(j.url, j.thumb), pf, if (square) 64.dp else 112.dp, 64.dp, st.thumbRadius)
             Spacer(Modifier.width(12.dp))
@@ -627,6 +656,16 @@ fun JobCard(j: JobInfo, actions: QueueActions, lifted: Boolean, onRemove: () -> 
                         JobState.PAUSED -> DropdownMenuItem({ Text("Продолжить") }, { menu = false; actions.resume(j.id) }, leadingIcon = { Icon(Icons.Rounded.PlayArrow, null) })
                         else -> DropdownMenuItem({ Text("Скачать ещё раз") }, { menu = false; actions.retry(j.id) }, leadingIcon = { Icon(Icons.Rounded.Refresh, null) })
                     }
+                    if (j.state == JobState.DONE && j.files.isNotEmpty()) {
+                        DropdownMenuItem({ Text("Открыть") }, {
+                            menu = false
+                            if (Files.main(j.files)?.let { Files.openFile(ctx, it) } != true) onMissing()
+                        }, leadingIcon = { Icon(Icons.Rounded.PlayArrow, null) })
+                        DropdownMenuItem({ Text("Перейти к папке") }, {
+                            menu = false
+                            if (Files.folder(j.files)?.let { Files.openFolder(ctx, it) } != true) onMissing()
+                        }, leadingIcon = { Icon(Icons.Rounded.FolderOpen, null) })
+                    }
                     DropdownMenuItem({ Text("Копировать ссылку") }, {
                         menu = false
                         (ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("ссылка", j.url))
@@ -636,6 +675,76 @@ fun JobCard(j: JobInfo, actions: QueueActions, lifted: Boolean, onRemove: () -> 
                         { menu = false; onRemove() },
                         leadingIcon = { Icon(Icons.Rounded.Delete, null, tint = c.error) },
                     )
+                }
+            }
+        }
+    }
+}
+
+/** Плашка «Доступна версия X»: обновить / позже / пропустить; прогресс скачивания; ошибка. */
+@Composable
+fun UpdateBanner(st: Updater.State) {
+    val ctx = LocalContext.current
+    val c = MaterialTheme.colorScheme
+    val info = when (st) {
+        is Updater.State.Found -> st.info
+        is Updater.State.Downloading -> st.info
+        is Updater.State.Installing -> st.info
+        is Updater.State.NeedPermission -> st.info
+        is Updater.State.Error -> st.info
+        else -> null
+    }
+    KitCard(Modifier.fillMaxWidth().padding(horizontal = cardPad()), color = c.primaryContainer) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.SystemUpdate, null, tint = c.onPrimaryContainer)
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    when (st) {
+                        is Updater.State.Error -> st.message
+                        is Updater.State.Installing -> "Ставлю версию ${info?.version}…"
+                        is Updater.State.NeedPermission -> "Разрешите установку обновлений в открывшейся настройке и вернитесь"
+                        else -> "Доступна версия ${info?.version}"
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (st is Updater.State.Error) c.error else c.onPrimaryContainer,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            if (st is Updater.State.Found && info != null && info.notes.isNotBlank()) {
+                Text(
+                    info.notes.lines().map { it.trim().removePrefix("#").removePrefix("#").removePrefix("-").removePrefix("*").trim() }
+                        .filter { it.isNotEmpty() }.take(4).joinToString("\n") { "• $it" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.onPrimaryContainer,
+                    maxLines = 5,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (st is Updater.State.Downloading) {
+                KitProgress(if (st.total > 0) st.done.toFloat() / st.total else null)
+                Text(
+                    "${st.done / 1_048_576} из ${st.total / 1_048_576} МБ",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.onPrimaryContainer,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                when (st) {
+                    is Updater.State.Found -> {
+                        KitButton("Обновить", { Updater.download(ctx, st.info) }, icon = Icons.Rounded.Download)
+                        KitButton("Позже", { Updater.dismiss() }, kind = Btn.TEXT)
+                        KitButton("Пропустить", {
+                            io.github.vivegass.vgd.core.updateSkip(st.info.version)
+                            Updater.dismiss()
+                        }, kind = Btn.TEXT)
+                    }
+                    is Updater.State.NeedPermission -> KitButton("Открыть настройку", { Updater.install(ctx, st.info, st.file) })
+                    is Updater.State.Error -> {
+                        if (info != null) KitButton("Ещё раз", { Updater.download(ctx, info) }, kind = Btn.TONAL)
+                        KitButton("Закрыть", { Updater.dismiss() }, kind = Btn.TEXT)
+                    }
+                    else -> {}
                 }
             }
         }
