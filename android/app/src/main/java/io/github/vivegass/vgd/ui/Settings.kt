@@ -47,7 +47,6 @@ import androidx.compose.material.icons.rounded.FormatListNumbered
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Image
-import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.MusicNote
@@ -181,7 +180,7 @@ private fun Swatch(c: Color) {
 
 @Composable
 fun SettingsContent(
-    o: JSONObject?,
+    src: JSONObject?,
     env: SettingsEnv,
     h: SettingsHandler,
     style: String,
@@ -192,16 +191,17 @@ fun SettingsContent(
 ) {
     var rev by remember { mutableIntStateOf(0) }
     var sheet by remember { mutableStateOf<String?>(null) }
-    var spotify by remember { mutableStateOf(false) }
+    // Пункты списка читают свежую копию: тот же изменённый JSONObject Compose считает «не изменился»
+    // и пропускает перерисовку — тогда подпись качества и переключатели застывали на старом значении.
+    val o = remember(src, rev) { src?.let { JSONObject(it.toString()) } }
     fun save(change: (JSONObject) -> Unit) {
-        val obj = o ?: return
+        val obj = src ?: return
         change(obj)
         rev++
         h.save(change)
     }
     val dark = MaterialTheme.colorScheme.isDark()
     VgdScaffold(title = "Настройки", bottomBar = nav) { inner ->
-        @Suppress("UNUSED_EXPRESSION") rev
         LazyColumn(
             contentPadding = PaddingValues(top = inner.calculateTopPadding(), bottom = inner.calculateBottomPadding() + 24.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -245,7 +245,6 @@ fun SettingsContent(
             }
             item(key = "music") {
                 val replace = !o.optBoolean("music_no_replace")
-                val hasKey = o.optString("spotify_id").isNotBlank() && o.optString("spotify_secret").isNotBlank()
                 Group("Музыка") {
                     nav("Формат", value = MUSIC.firstOrNull { it.first == o.optString("music_format", "best") }?.second ?: "Как есть", icon = Icons.Rounded.MusicNote, tint = Tint.PINK) { sheet = "music" }
                     toggle("Номер трека в имени файла", o.optBoolean("music_numbers", true), icon = Icons.Rounded.FormatListNumbered, tint = Tint.BLUE) { v -> save { it.put("music_numbers", v) } }
@@ -253,7 +252,6 @@ fun SettingsContent(
                     toggle("Замены — в отдельную папку", o.optBoolean("music_replace_dir"), "«_из других мест»", Icons.Rounded.DriveFileMove, Tint.GRAY, enabled = replace) { v -> save { it.put("music_replace_dir", v) } }
                     toggle("Проверять замену по звуку", o.optBoolean("music_verify", true), "Сравнение с образцом Deezer", Icons.Rounded.GraphicEq, Tint.PURPLE) { v -> save { it.put("music_verify", v) } }
                     toggle("Тексты песен", o.optBoolean("lyrics"), "LRCLIB, с таймингом — .lrc рядом", Icons.Rounded.Lyrics, Tint.TEAL) { v -> save { it.put("lyrics", v) } }
-                    nav("Ключ Spotify для альбомов", value = if (hasKey) "Задан" else "Необязательно", subtitle = "Плейлисты целиком программа берёт со страницы Spotify — ключ для них не нужен", icon = Icons.Rounded.Key, tint = Tint.GREEN) { spotify = true }
                 }
             }
             item(key = "acc") {
@@ -318,7 +316,7 @@ fun SettingsContent(
             }
             item(key = "update") {
                 val ust by io.github.vivegass.vgd.Updater.state.collectAsState()
-                Group("Обновления", footer = "С GitHub (релизы android-v…), файл сверяется по SHA-256. Ставится поверх, если APK подписан тем же ключом.") {
+                Group("Обновления", footer = "С GitHub (общий релиз с ПК), файл сверяется по SHA-256. Ставится поверх, если APK подписан тем же ключом.") {
                     nav(
                         "Проверить обновления",
                         value = when (val u = ust) {
@@ -408,34 +406,6 @@ fun SettingsContent(
                 }
             },
             onDismiss = { sheet = null },
-        )
-    }
-    if (spotify) {
-        var id by remember { mutableStateOf(obj.optString("spotify_id")) }
-        var secret by remember { mutableStateOf(obj.optString("spotify_secret")) }
-        AlertDialog(
-            onDismissRequest = { spotify = false },
-            title = { Text("Ключ Spotify") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Необязательно. Плейлисты программа собирает со страницы Spotify целиком и без ключа: с февраля 2026 " +
-                            "Spotify Web API не отдаёт по ключу содержимое чужих плейлистов. Ключ помогает только с альбомами и " +
-                            "треками, и работает, лишь если у владельца приложения Spotify есть Premium. " +
-                            "developer.spotify.com → Dashboard → Create app.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    KitTextField(id, { id = it }, "Client ID", singleLine = true)
-                    KitTextField(secret, { secret = it }, "Client secret", singleLine = true)
-                }
-            },
-            confirmButton = {
-                KitButton("Сохранить", {
-                    save { it.put("spotify_id", id.trim()); it.put("spotify_secret", secret.trim()) }
-                    spotify = false
-                }, kind = Btn.TEXT)
-            },
-            dismissButton = { KitButton("Отмена", { spotify = false }, kind = Btn.TEXT) },
         )
     }
 }

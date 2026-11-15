@@ -29,7 +29,7 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
- * Обновление приложения через GitHub Releases (теги `android-v…`, ассет `…-arm64.apk`) — та же логика,
+ * Обновление приложения через GitHub Releases (общий с ПК релиз `v…`, ассет `…-android-<версия>-arm64.apk`) — та же логика,
  * что у ПК (`core/src/update.rs`): проверка, скачивание с докачкой и проверкой SHA-256 — в ядре;
  * здесь — плашка, уведомление с прогрессом и установка через PackageInstaller.
  * Встаёт поверх только APK с тем же ключом подписи (свой release-ключ — до первого публичного APK).

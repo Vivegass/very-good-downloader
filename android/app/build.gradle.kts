@@ -10,6 +10,10 @@ plugins {
 val abis: List<String> = (project.findProperty("vgd.abis") as String? ?: "arm64-v8a")
     .split(',').map { it.trim() }.filter { it.isNotEmpty() }
 
+// Версия приложения = версия ядра и ПК: [workspace.package] version в rust/Cargo.toml.
+val workspaceVersion: String = rootProject.file("../rust/Cargo.toml").readLines()
+    .first { it.trim().startsWith("version = \"") }.substringAfter('"').substringBefore('"')
+
 android {
     namespace = "io.github.vivegass.vgd"
     compileSdk = 36
@@ -19,9 +23,11 @@ android {
         applicationId = "io.github.vivegass.vgd"
         minSdk = 26
         targetSdk = 36
-        // -Pvgd.versionName=0.5.1 -Pvgd.versionCode=6 — проверка обновления поверх (mock-релиз)
-        versionCode = (project.findProperty("vgd.versionCode") as String?)?.toInt() ?: 5
-        versionName = (project.findProperty("vgd.versionName") as String?) ?: "0.5.0"
+        // Версия общая с ПК — из rust/Cargo.toml (один релиз v<версия> на обе платформы);
+        // versionCode = 1.13.0 → 11300. -Pvgd.versionName=… -Pvgd.versionCode=… — проверка обновления (mock-релиз).
+        versionName = (project.findProperty("vgd.versionName") as String?) ?: workspaceVersion
+        versionCode = (project.findProperty("vgd.versionCode") as String?)?.toInt()
+            ?: workspaceVersion.substringBefore('-').split('.').map { it.toInt() }.let { (a, b, c) -> a * 10000 + b * 100 + c }
         ndk { abiFilters += abis }
     }
 

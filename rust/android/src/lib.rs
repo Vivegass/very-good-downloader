@@ -467,7 +467,7 @@ fn oembed(url: &str) -> Option<(String, String)> {
     (!title.is_empty() || !thumb.is_empty()).then_some((title, thumb))
 }
 
-// ---------- обновление программы (GitHub Releases, теги android-v…) ----------
+// ---------- обновление программы (GitHub Releases, общий с ПК тег v…) ----------
 
 use vgd_core::update::{self, Platform, Prefs, Release};
 
@@ -546,7 +546,7 @@ pub fn update_due() -> bool {
     Prefs::load().due(update::now())
 }
 
-/// Проверить релизы `android-v…`. Some — есть новее `current`; результат запоминается (плашка без сети).
+/// Проверить релизы (`v…`, ассет APK). Some — есть новее `current`; результат запоминается (плашка без сети).
 #[uniffi::export]
 pub fn update_check(current: String) -> Result<Option<UpdateInfo>, VgdError> {
     let mut p = Prefs::load();

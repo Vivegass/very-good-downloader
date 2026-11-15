@@ -70,9 +70,30 @@ try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory($dist, $zip, [IO.Compression.CompressionLevel]::Optimal, $true)
 
+    # Android: APK той же версии (версия берётся из Cargo.toml) — в тот же релиз. Только со своим ключом
+    # подписи (android\keystore.properties): APK с debug-ключом этого ПК выкладывать нельзя.
+    $android = Join-Path $root 'android'
+    $apk = "VeryGoodDownloader-android-$version-arm64.apk"
+    if ($env:VGD_SKIP_ANDROID) {
+        Write-Host 'Android: пропущен (VGD_SKIP_ANDROID)'
+    } elseif (Test-Path (Join-Path $android 'keystore.properties')) {
+        $jdk = Get-ChildItem "$env:ProgramFiles\Java" -Directory -Filter 'jdk-21*' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($jdk) { $env:JAVA_HOME = $jdk.FullName }
+        if (-not $env:GRADLE_USER_HOME -and (Test-Path 'D:\Android\.gradle')) { $env:GRADLE_USER_HOME = 'D:\Android\.gradle' }
+        $env:PATH = $env:PATH -replace '"', ''
+        Push-Location $android
+        try {
+            & .\gradlew.bat assembleRelease
+            if ($LASTEXITCODE) { throw 'Android: gradle assembleRelease завершился с ошибкой' }
+        } finally { Pop-Location }
+        Copy-Item (Join-Path $android 'app\build\outputs\apk\release\app-release.apk') (Join-Path $release $apk) -Force
+    } else {
+        Write-Host 'Android: нет android\keystore.properties — APK не собран (релиз будет только для ПК)'
+    }
+
     # SHA-256 рядом с каждым ассетом: «<хэш>  <имя>». Программа сверяет скачанное обновление
     # с полем digest из GitHub API, а если его нет — с этим файлом (без суммы не обновляется).
-    $assets = @("VeryGoodDownloader-Setup-$version.exe", "VeryGoodDownloader-$version-portable.zip") |
+    $assets = @("VeryGoodDownloader-Setup-$version.exe", "VeryGoodDownloader-$version-portable.zip", $apk) |
         ForEach-Object { Join-Path $release $_ } | Where-Object { Test-Path $_ }
     foreach ($a in $assets) {
         $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $a).Hash.ToLower()
@@ -81,16 +102,16 @@ try {
     # Заметка: что приложить к релизу на GitHub.
     $list = ($assets | ForEach-Object { $n = Split-Path $_ -Leaf; "  $n`n  $n.sha256" }) -join "`n"
     $note = @"
-Релиз Very Good Downloader $version для Windows
+Релиз Very Good Downloader $version — Windows и Android в одном релизе
 
-Тег: v$version  (Android — отдельные релизы с тегом android-v<версия>, см. rust\README.md → «Обновления»)
+Тег: v$version  (общий для ПК и Android, см. rust\README.md → «Обновления»)
 Не отмечать «Set as a pre-release», если это не бета: программа предлагает пре-релизы только с галочкой «бета-версии».
 
 Приложить к релизу (Assets):
 $list
 
 Имена файлов не менять: программа ищет ассет по имени (VeryGoodDownloader-Setup-<версия>.exe,
-VeryGoodDownloader-<версия>-portable.zip). Описание релиза (markdown) показывается в окне по «что нового».
+VeryGoodDownloader-<версия>-portable.zip, VeryGoodDownloader-android-<версия>-arm64.apk). Описание релиза (markdown) показывается в окне по «что нового».
 "@
     [IO.File]::WriteAllText((Join-Path $release "РЕЛИЗ-$version.txt"), $note, (New-Object Text.UTF8Encoding $true))
     Write-Host "Ассеты и .sha256 — в $release, что приложить к релизу — РЕЛИЗ-$version.txt"

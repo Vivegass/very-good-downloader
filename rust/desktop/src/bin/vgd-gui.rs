@@ -1694,11 +1694,6 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                         ui.add(egui::TextEdit::singleline(&mut self.s.odesli_key).password(true).hint_text("ключ").desired_width(180.0));
                     });
                     divider(ui);
-                    row(ui, "ключ spotify (необязательно)", "плейлисты целиком — только кнопкой расширения «скачать плейлист» на странице spotify: с февраля 2026 api spotify по ключу не отдаёт содержимое чужих плейлистов. ключ помогает лишь с альбомами и треками и работает, только если у владельца приложения spotify есть premium: developer.spotify.com → dashboard → create app; в поле redirect uri впишите https://example.com/callback (адрес не используется); галочка web api → save → settings → скопируйте client id и client secret сюда.", |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.s.spotify_secret).password(true).hint_text("client secret").desired_width(150.0));
-                        ui.add(egui::TextEdit::singleline(&mut self.s.spotify_id).hint_text("client id").desired_width(150.0));
-                    });
-                    divider(ui);
                     row(ui, "spotify и vk из браузера", "spotify отдаёт программе только 100 треков, а vk — ничего без входа. откройте плейлист в браузере и нажмите кнопку расширения «скачать плейлист» — весь список уйдёт в программу. звук vk берётся прямо из vk; звук spotify — с youtube music, soundcloud или youtube. так же заменяются заблокированные треки.", |_ui| {});
                 });
                 }

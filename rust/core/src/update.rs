@@ -1,8 +1,10 @@
 //! Обновление программы через GitHub Releases (`Vivegass/very-good-downloader`) — общее для ПК и Android.
 //!
 //! Схема релизов (подробно — в rust/README.md):
-//! - ПК: тег `v1.11.0`, ассеты `VeryGoodDownloader-Setup-1.11.0.exe` и `VeryGoodDownloader-1.11.0-portable.zip`;
-//! - Android: отдельный релиз с тегом `android-v0.3.0`, ассет `VeryGoodDownloader-android-0.3.0-arm64.apk`;
+//! - один релиз на ПК и Android с общей версией (с 1.13.0): тег `v1.13.0`, ассеты
+//!   `VeryGoodDownloader-Setup-1.13.0.exe`, `VeryGoodDownloader-1.13.0-portable.zip` и
+//!   `VeryGoodDownloader-android-1.13.0-arm64.apk`; релиз без ассета своей платформы пропускается;
+//! - старые отдельные релизы Android (`android-v0.5.0`) Android тоже понимает;
 //! - у каждого ассета — SHA-256: поле `digest` в ответе GitHub API (`"sha256:…"`, GitHub считает его сам)
 //!   или, если его нет, ассет `<имя>.sha256` рядом. Без контрольной суммы обновление не ставится.
 //!
@@ -69,12 +71,15 @@ pub enum Platform {
 }
 
 impl Platform {
-    /// Тег релиза относится к этой платформе: ПК — `v1.11.0`, Android — `android-v0.3.0`.
+    /// Тег релиза относится к этой платформе: общий `v1.13.0` — обеим, старый `android-v0.5.0` — только Android.
     pub fn tag_matches(self, tag: &str) -> bool {
         let t = tag.trim().to_ascii_lowercase();
         let starts_digit = |s: &str| s.chars().next().is_some_and(|c| c.is_ascii_digit());
         match self {
-            Platform::Android => t.strip_prefix("android-").is_some_and(|r| starts_digit(r.strip_prefix('v').unwrap_or(r))),
+            Platform::Android => {
+                t.strip_prefix("android-").is_some_and(|r| starts_digit(r.strip_prefix('v').unwrap_or(r)))
+                    || t.strip_prefix('v').is_some_and(starts_digit)
+            }
             _ => t.strip_prefix('v').is_some_and(starts_digit),
         }
     }
@@ -672,7 +677,8 @@ mod tests {
         assert!(!Platform::WindowsSetup.tag_matches("very-good"));
         assert!(Platform::Android.tag_matches("android-v0.3.0"));
         assert!(Platform::Android.tag_matches("android-0.3.0"));
-        assert!(!Platform::Android.tag_matches("v1.11.0"));
+        assert!(Platform::Android.tag_matches("v1.13.0"));
+        assert!(!Platform::Android.tag_matches("very-good"));
     }
 
     const H1: &str = "1111111111111111111111111111111111111111111111111111111111111111";

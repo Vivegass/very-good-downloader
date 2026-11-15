@@ -79,7 +79,7 @@ Debug-сборка ставится как отдельное приложени
 | `DownloadService.kt` | служба переднего плана `dataSync`: прогресс, WakeLock + WifiLock, `onTimeout` (Android 15) → пауза |
 | `Notifications.kt` | уведомления прогресса и «скачано / не скачалось» |
 | `Shortcuts.kt`, `res/xml/shortcuts.xml` | ярлыки «Видео» / «Звук»: Direct Share в «Поделиться» и на значке приложения |
-| `Updater.kt` | обновление: проверка релизов `android-v…`, плашка, скачивание с уведомлением, PackageInstaller, `UpdateWorker` (6 ч) |
+| `Updater.kt` | обновление: проверка общих релизов `v…` (ассет APK), плашка, скачивание с уведомлением, PackageInstaller, `UpdateWorker` (6 ч) |
 | `ui/Files.kt` | открыть скачанный файл (FileProvider) / папку в «Файлах» |
 | `SpotifyAgent.kt` | весь плейлист Spotify со страницы (скрытый WebView + `spotify_agent.js` ядра; API Spotify с 2026 чужих плейлистов не отдаёт) |
 | `VkAgent.kt`, `LoginActivity.kt` | VK: скрытый WebView с `vk_agent.js` (поиск), окно входа VK / YouTube (→ `cookies.txt`) |
