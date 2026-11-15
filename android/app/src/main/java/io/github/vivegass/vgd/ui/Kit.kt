@@ -189,7 +189,7 @@ private fun Header(title: String, subtitle: String?, state: TopAppBarState, acti
     val bg = when (st.kind) {
         Kind.YOU -> lerp(page, if (c.isDark()) c.surfaceContainer else c.surfaceContainerHigh, f)
         // «материал» навбара iOS / стекло HyperOS: чуть прозрачный, когда содержимое уходит под него
-        Kind.IOS, Kind.HYPER -> page.copy(alpha = 1f - 0.08f * f)
+        Kind.IOS, Kind.HYPER -> page
         else -> page
     }
     val ty = MaterialTheme.typography

@@ -364,7 +364,8 @@ impl Queue {
             Event::Progress(id, p) => {
                 if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
                     j.state = State::Running;
-                    if !p.title.is_empty() {
+                    // ссылка вместо названия (видео уже скачано раньше) не затирает настоящее название
+                    if !p.title.is_empty() && !(p.title.starts_with("http") && !j.title.starts_with("http")) {
                         j.title = p.title.clone();
                     }
                     j.stage = p.stage.clone();
@@ -401,7 +402,7 @@ impl Queue {
                     j.item.clear();
                     j.message = if state == State::Done {
                         if files.is_empty() {
-                            "новых видео нет — всё уже скачано раньше".into()
+                            "уже скачано раньше".into()
                         } else {
                             format!("файлов: {}", files.len())
                         }
@@ -580,6 +581,8 @@ mod tests {
         q.handle(Event::Progress(a, Progress { stage: "video".into(), percent: 40.0, title: "Видео".into(), ..Default::default() }));
         assert_eq!(q.job(a).unwrap().state, State::Running);
         assert_eq!(q.job(a).unwrap().title, "Видео");
+        q.handle(Event::Progress(a, Progress { title: "https://youtu.be/x".into(), ..Default::default() }));
+        assert_eq!(q.job(a).unwrap().title, "Видео", "ссылка не затирает название");
         q.pause(a);
         assert_eq!(q.handle(Event::Finish(a, State::Cancelled, vec![], None)), Outcome::Finished(a));
         assert_eq!(q.job(a).unwrap().state, State::Paused);
