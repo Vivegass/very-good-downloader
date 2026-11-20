@@ -965,6 +965,14 @@ pub fn extract_url(text: String) -> Option<String> {
         .map(String::from)
 }
 
+/// Строка из поля «Скачать»: ссылка из неё, а если ссылки нет — сама строка как поиск трека по названию.
+/// (Буфер обмена, «Поделиться» и подписки берут только ссылки — `extract_url`.)
+#[uniffi::export]
+pub fn extract_url_or_search(text: String) -> Option<String> {
+    let trimmed = text.trim().to_string();
+    extract_url(text).or_else(|| vgd_core::music::is_search(&trimmed).then_some(trimmed))
+}
+
 /// Музыкальная ссылка (Spotify, SoundCloud, YouTube Music, Яндекс…) — для подписи в интерфейсе.
 #[uniffi::export]
 pub fn is_music_url(url: String) -> bool {

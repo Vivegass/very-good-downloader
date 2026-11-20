@@ -55,6 +55,7 @@ import androidx.compose.material.icons.rounded.People
 import androidx.compose.material.icons.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Science
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SlowMotionVideo
 import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material.icons.rounded.Subtitles
@@ -68,6 +69,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -191,6 +193,7 @@ fun SettingsContent(
 ) {
     var rev by remember { mutableIntStateOf(0) }
     var sheet by remember { mutableStateOf<String?>(null) }
+    var query by remember { mutableStateOf("") }
     // Пункты списка читают свежую копию: тот же изменённый JSONObject Compose считает «не изменился»
     // и пропускает перерисовку — тогда подпись качества и переключатели застывали на старом значении.
     val o = remember(src, rev) { src?.let { JSONObject(it.toString()) } }
@@ -202,11 +205,23 @@ fun SettingsContent(
     }
     val dark = MaterialTheme.colorScheme.isDark()
     VgdScaffold(title = "Настройки", bottomBar = nav) { inner ->
+        CompositionLocalProvider(LocalGroupFilter provides query) {
         LazyColumn(
             contentPadding = PaddingValues(top = inner.calculateTopPadding(), bottom = inner.calculateBottomPadding() + 24.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
+            item(key = "search") {
+                KitTextField(
+                    value = query,
+                    onChange = { query = it },
+                    placeholder = "Поиск по настройкам",
+                    singleLine = true,
+                    leading = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                    trailing = if (query.isEmpty()) null else ({ IconButton(onClick = { query = "" }) { Icon(Icons.Rounded.Close, contentDescription = "Очистить") } }),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                )
+            }
             if (o == null) {
                 item { Text("Загружаю…", modifier = Modifier.padding(24.dp)) }
                 return@LazyColumn
@@ -215,7 +230,7 @@ fun SettingsContent(
                 Group("Загрузки") {
                     nav("Папка", value = shortPath(o.optString("out_dir")), icon = Icons.Rounded.Folder, tint = Tint.BLUE) { h.pickFolder() }
                     nav("Качество видео", value = HEIGHTS.firstOrNull { it.first == o.optInt("max_height") }?.second ?: "${o.optInt("max_height")}p", icon = Icons.Rounded.HighQuality, tint = Tint.RED) { sheet = "height" }
-                    custom {
+                    custom("Кадров в секунду fps частота") {
                         val fps = listOf(0, 60, 30, 24)
                         Column {
                             KitRow("Кадров в секунду", subtitle = "Если такой частоты нет — пересчёт", icon = Icons.Rounded.SlowMotionVideo, tint = Tint.ORANGE)
@@ -341,7 +356,7 @@ fun SettingsContent(
                     nav(if (env.checking) "Проверяю…" else "Проверка", subtitle = "yt-dlp, ffmpeg, форматы YouTube — результат в «Журнале»", icon = Icons.Rounded.FactCheck, tint = Tint.GREEN, enabled = !env.checking) { h.check() }
                 }
             }
-            item(key = "ver") {
+            if (query.isEmpty()) item(key = "ver") {
                 Text(
                     env.version,
                     style = MaterialTheme.typography.bodySmall,
@@ -350,6 +365,7 @@ fun SettingsContent(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
                 )
             }
+        }
         }
     }
 

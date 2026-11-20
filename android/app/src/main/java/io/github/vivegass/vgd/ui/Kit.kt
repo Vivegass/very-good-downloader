@@ -396,9 +396,21 @@ enum class Tint(val light: Long, val dark: Long) {
 
 class GroupScope {
     internal val items = mutableListOf<@Composable (divider: Boolean) -> Unit>()
-    fun item(content: @Composable (divider: Boolean) -> Unit) {
+    /** текст пункта для поиска по настройкам (название, подпись, значение); у custom — пусто */
+    internal val texts = mutableListOf<String>()
+    fun item(text: String = "", content: @Composable (divider: Boolean) -> Unit) {
         items += content
+        texts += text
     }
+}
+
+/** Поиск по настройкам: группы показывают только пункты с этими словами (пусто — всё). */
+val LocalGroupFilter = androidx.compose.runtime.compositionLocalOf { "" }
+
+/** Подходит ли текст под поиск: все слова запроса есть в тексте (без учёта регистра и «ё»). */
+fun matchesQuery(text: String, query: String): Boolean {
+    val hay = text.lowercase().replace('ё', 'е')
+    return query.lowercase().replace('ё', 'е').split(' ').filter { it.isNotBlank() }.all { it in hay }
 }
 
 /** Заголовок группы / раздела. */
@@ -427,7 +439,13 @@ fun SectionHeader(title: String, modifier: Modifier = Modifier, trailing: @Compo
 @Composable
 fun Group(title: String? = null, footer: String? = null, modifier: Modifier = Modifier, content: GroupScope.() -> Unit) {
     val st = LocalVgdStyle.current
-    val scope = GroupScope().apply(content)
+    val all = GroupScope().apply(content)
+    val query = LocalGroupFilter.current.trim()
+    // Поиск: название группы подошло — вся группа, иначе только подходящие пункты; ничего — группы нет.
+    val scope = if (query.isEmpty() || (title != null && matchesQuery(title, query))) all else GroupScope().also { s ->
+        all.items.forEachIndexed { i, it -> if (all.texts[i].isNotEmpty() && matchesQuery(all.texts[i], query)) s.item(all.texts[i], it) }
+    }
+    if (scope.items.isEmpty()) return
     val n = scope.items.size
     Column(modifier.fillMaxWidth().padding(horizontal = st.hPad)) {
         if (title != null) SectionHeader(title)
@@ -448,7 +466,7 @@ fun Group(title: String? = null, footer: String? = null, modifier: Modifier = Mo
                 Column { scope.items.forEachIndexed { i, item -> item(i < n - 1) } }
             }
         }
-        if (footer != null) {
+        if (footer != null && query.isEmpty()) {
             Text(
                 footer,
                 style = MaterialTheme.typography.bodySmall,
@@ -582,7 +600,7 @@ fun GroupScope.nav(
     value: String? = null,
     enabled: Boolean = true,
     onClick: () -> Unit,
-) = item { d -> KitRow(title, subtitle, icon, tint, value, d, nav = true, enabled = enabled, onClick = onClick) }
+) = item(listOfNotNull(title, subtitle, value).joinToString(" ")) { d -> KitRow(title, subtitle, icon, tint, value, d, nav = true, enabled = enabled, onClick = onClick) }
 
 /** Пункт группы: переключатель (нажимается вся строка). */
 fun GroupScope.toggle(
@@ -593,7 +611,7 @@ fun GroupScope.toggle(
     tint: Tint = Tint.BLUE,
     enabled: Boolean = true,
     onChange: (Boolean) -> Unit,
-) = item { d ->
+) = item(listOfNotNull(title, subtitle).joinToString(" ")) { d ->
     KitRow(
         title, subtitle, icon, tint, null, d,
         enabled = enabled,
@@ -606,7 +624,7 @@ fun GroupScope.toggle(
 fun rowPad(): Dp = when (LocalVgdStyle.current.kind) { Kind.HYPER -> 24.dp; Kind.ONEUI -> 22.dp; else -> 16.dp }
 
 /** Пункт группы: что угодно. */
-fun GroupScope.custom(content: @Composable () -> Unit) = item { _ -> content() }
+fun GroupScope.custom(text: String = "", content: @Composable () -> Unit) = item(text) { _ -> content() }
 
 // ---------- переключатель ----------
 
@@ -872,6 +890,7 @@ fun KitTextField(
     maxLines: Int = if (singleLine) 1 else 6,
     label: String? = null,
     trailing: (@Composable () -> Unit)? = null,
+    leading: (@Composable () -> Unit)? = null,
 ) {
     val st = LocalVgdStyle.current
     if (st.kind == Kind.YOU) {
@@ -882,6 +901,7 @@ fun KitTextField(
             singleLine = singleLine, minLines = minLines, maxLines = maxLines,
             shape = RoundedCornerShape(16.dp),
             trailingIcon = trailing,
+            leadingIcon = leading,
             colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = groupColor(), focusedContainerColor = groupColor()),
         )
         return
@@ -894,6 +914,7 @@ fun KitTextField(
         singleLine = singleLine, minLines = minLines, maxLines = maxLines,
         shape = RoundedCornerShape(radius),
         trailingIcon = trailing,
+        leadingIcon = leading,
         colors = TextFieldDefaults.colors(
             focusedContainerColor = bg, unfocusedContainerColor = bg, disabledContainerColor = bg,
             focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, disabledIndicatorColor = Color.Transparent,

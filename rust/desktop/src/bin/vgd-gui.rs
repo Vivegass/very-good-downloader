@@ -179,6 +179,14 @@ impl Pal {
 
 thread_local! {
     static PAL: std::cell::Cell<Pal> = std::cell::Cell::new(Pal::of(&theme::dark()));
+    /// поиск по настройкам: пока Some — row() записывает сюда (группа, пункт, пояснение)
+    static SET_INDEX: std::cell::RefCell<Option<Vec<(String, String, String)>>> = const { std::cell::RefCell::new(None) };
+    /// группа настроек, которую сейчас рисуем
+    static SET_GROUP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    /// пока собираем указатель — все группы открыты
+    static SET_FORCE_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// выбранный в поиске пункт: (группа, пункт, когда выбран, уже прокручен)
+    static SET_JUMP: std::cell::RefCell<Option<(String, String, f64, bool)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Цвета текущей темы.
@@ -278,6 +286,8 @@ fn paint_background(ui: &egui::Ui) {
 }
 
 // Значки из шрифта Segoe MDL2 Assets (есть в каждой Windows 10/11).
+/// метка в settings.json → collapsed: «параметры» на главной свёрнуты
+const OPTS_COLLAPSED: &str = "главная: параметры";
 const I_DOWNLOAD: char = '\u{E896}';
 const I_SETTINGS: char = '\u{E713}';
 const I_LOG: char = '\u{E8A5}';
@@ -291,6 +301,7 @@ const I_PAUSE: char = '\u{E769}';
 const I_PLAY: char = '\u{E768}';
 const I_UP: char = '\u{E70E}';
 const I_DOWN: char = '\u{E70D}';
+const I_SEARCH: char = '\u{E721}';
 
 fn icons() -> FontFamily {
     FontFamily::Name("icons".into())
@@ -315,6 +326,7 @@ fn glyph(icon: char) -> char {
         I_PLAY => '▶',
         I_UP => '▲',
         I_DOWN => '▼',
+        I_SEARCH => '⌕',
         other => other,
     }
 }
@@ -434,6 +446,8 @@ struct App {
     /// параметры для следующих ссылок: фрагмент, только звук
     next_opts: JobOpts,
     show_opts: bool,
+    /// строка поиска на странице настроек
+    set_search: String,
     /// буфер обмена: последняя увиденная ссылка и предложение её скачать
     clip_last: String,
     clip_offer: Option<String>,
@@ -495,6 +509,8 @@ impl App {
             vgd::appinfo::fix_autostart(&exe);
         }
         let mut s = Settings::load();
+        // «параметры» на главной развёрнуты, пока их не свернули (запоминается в settings.json → collapsed)
+        let opts_open = !s.collapsed.iter().any(|c| c == OPTS_COLLAPSED);
         // Своей темы больше нет в папке — тёмная.
         if let Some(stem) = s.theme.strip_prefix(theme::FILE_PREFIX) {
             if !theme::dir().join(format!("{stem}.json")).is_file() {
@@ -578,7 +594,9 @@ impl App {
             logo,
             ctx: cc.egui_ctx.clone(),
             next_opts: JobOpts::default(),
-            show_opts: false,
+            show_opts: opts_open,
+            // «--search=куки» вместе с «--page=settings» — открыть настройки с этим поиском
+            set_search: std::env::args().find_map(|a| a.strip_prefix("--search=").map(String::from)).unwrap_or_default(),
             clip_last: String::new(),
             clip_offer: None,
             clip_at: 0.0,
@@ -783,6 +801,10 @@ impl App {
 
     /// Заголовок группы настроек: щелчок сворачивает и разворачивает её (запоминается).
     fn group(&mut self, ui: &mut egui::Ui, title: &str) -> bool {
+        SET_GROUP.with(|g| *g.borrow_mut() = title.to_string());
+        if SET_FORCE_OPEN.with(|f| f.get()) {
+            return true;
+        }
         let open = !self.s.collapsed.iter().any(|c| c == title);
         ui.add_space(12.0);
         let font = if pal().lay.bold { FontId::new(11.5, bold()) } else { FontId::monospace(11.5) };
@@ -1165,7 +1187,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                                     .desired_rows(1)
                                     .desired_width(f32::INFINITY)
                                     .hint_text(
-                                        RichText::new("вставь ссылку — несколько можно с новой строки").color(pal().faint),
+                                        RichText::new("вставь ссылку или название трека — несколько можно с новой строки").color(pal().faint),
                                     ),
                             );
                         });
@@ -1294,10 +1316,28 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                         }
                         format!("параметры: {}", parts.join(" · "))
                     } else {
-                        "параметры ▾".to_string()
+                        String::new()
                     };
-                    if link(ui, &label).clicked() {
+                    // Заметный заголовок, а не бледная ссылка: его не находили.
+                    let head = format!("параметры {}", if self.show_opts { "▴" } else { "▾" });
+                    let r = ui
+                        .add(egui::Label::new(RichText::new(head).size(13.5).strong().color(pal().text)).sense(Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(if self.show_opts { "свернуть" } else { "фрагмент, только звук, микс → треки, качество и формат для следующих ссылок" });
+                    if r.hovered() {
+                        let y = r.rect.bottom();
+                        ui.painter().line_segment([egui::pos2(r.rect.left(), y), egui::pos2(r.rect.right(), y)], Stroke::new(1.0, pal().text));
+                    }
+                    if r.clicked() {
                         self.show_opts = !self.show_opts;
+                        self.s.collapsed.retain(|c| c != OPTS_COLLAPSED);
+                        if !self.show_opts {
+                            self.s.collapsed.push(OPTS_COLLAPSED.into());
+                        }
+                        self.save_settings();
+                    }
+                    if custom {
+                        ui.label(RichText::new(label.trim_start_matches("параметры: ")).size(12.0).color(pal().muted));
                     }
                     if custom && link(ui, "сбросить").clicked() {
                         self.next_opts = JobOpts::default();
@@ -1467,12 +1507,123 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
     fn ui_settings(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let before = self.s.clone();
+        let q = self.set_search.trim().to_lowercase();
+        // Поиск: указатель пунктов собирается невидимым проходом по всем группам (как будто все открыты),
+        // а на странице — только найденное. Щелчок — открыть группу и прокрутить к пункту.
+        let found = if q.is_empty() {
+            Vec::new()
+        } else {
+            SET_INDEX.with(|i| *i.borrow_mut() = Some(Vec::new()));
+            SET_FORCE_OPEN.with(|f| f.set(true));
+            egui::Area::new(egui::Id::unique("settings-index"))
+                .fixed_pos(egui::pos2(-30000.0, -30000.0))
+                .interactable(false)
+                .show(&ctx, |ui| {
+                    ui.set_invisible();
+                    ui.set_width(700.0);
+                    self.settings_body(ui, &ctx);
+                });
+            SET_FORCE_OPEN.with(|f| f.set(false));
+            let all = SET_INDEX.with(|i| i.borrow_mut().take()).unwrap_or_default();
+            let words: Vec<&str> = q.split_whitespace().collect();
+            let mut seen = std::collections::HashSet::new();
+            all.into_iter()
+                .filter(|(g, l, t)| {
+                    let hay = format!("{g} {l} {t}").to_lowercase().replace('ё', "е");
+                    words.iter().all(|w| hay.contains(&w.replace('ё', "е")))
+                })
+                .filter(|(g, l, _)| seen.insert((g.clone(), l.clone())))
+                .collect::<Vec<_>>()
+        };
         egui::ScrollArea::vertical().id_salt("settings").auto_shrink([false, false]).show(ui, |ui| {
             centered(ui, |ui| {
                 ui.add_space(18.0);
                 ui.label(heading("настройки", 17.0));
                 ui.add_space(10.0);
+                self.ui_settings_search(ui);
+                if q.is_empty() {
+                    self.settings_body(ui, &ctx);
+                } else {
+                    ui.add_space(8.0);
+                    if found.is_empty() {
+                        hint(ui, "ничего не нашлось — попробуйте другое слово");
+                    } else {
+                        let mut go = None;
+                        card(ui, |ui| {
+                            for (k, (g, l, t)) in found.iter().enumerate() {
+                                if k > 0 {
+                                    divider(ui);
+                                }
+                                let r = ui
+                                    .scope(|ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.add_space(6.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(l).size(13.0).color(pal().text));
+                                            ui.label(RichText::new(format!("· {g}")).size(11.5).color(pal().faint));
+                                        });
+                                        if !t.is_empty() {
+                                            let short: String = t.chars().take(160).collect();
+                                            let short = if short.len() < t.len() { format!("{short}…") } else { short };
+                                            ui.add(egui::Label::new(RichText::new(short).size(11.5).color(pal().muted)).wrap());
+                                        }
+                                        ui.add_space(6.0);
+                                    })
+                                    .response;
+                                let r = ui.interact(r.rect, egui::Id::unique(("set-hit", k)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                                if r.hovered() {
+                                    ui.painter().rect_filled(r.rect, rad(6), pal().text.gamma_multiply(0.05));
+                                }
+                                if r.clicked() {
+                                    go = Some((g.clone(), l.clone()));
+                                }
+                            }
+                        });
+                        if let Some((g, l)) = go {
+                            self.set_search.clear();
+                            self.s.collapsed.retain(|c| *c != g);
+                            let now = ctx.input(|i| i.time);
+                            SET_JUMP.with(|j| *j.borrow_mut() = Some((g, l, now, false)));
+                        }
+                    }
+                }
+                ui.add_space(14.0);
+            });
+        });
+        if !same(&before, &self.s) {
+            self.save_settings();
+        }
+    }
 
+    /// Строка поиска по настройкам.
+    fn ui_settings_search(&mut self, ui: &mut egui::Ui) {
+        let id = egui::Id::unique("settings-search");
+        let focus = ui.memory(|m| m.has_focus(id));
+        egui::Frame::new()
+            .fill(pal().surface)
+            .stroke(Stroke::new(1.0, if focus { pal().muted } else { pal().border }))
+            .corner_radius(if pal().lay.field_r >= 0.0 { pal().lay.field_r.round() as u8 } else { rad(12) })
+            .inner_margin(margin(12.0, 7.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(glyph(I_SEARCH).to_string()).family(icons()).size(14.0).color(pal().muted));
+                    let w = ui.available_width() - if self.set_search.is_empty() { 0.0 } else { 30.0 };
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.set_search)
+                            .id(id)
+                            .frame(egui::Frame::NONE)
+                            .desired_width(w)
+                            .hint_text(RichText::new("поиск по настройкам: куки, субтитры, папка, тема…").color(pal().faint)),
+                    );
+                    if !self.set_search.is_empty() && icon_button(ui, I_CLOSE, "очистить").clicked() {
+                        self.set_search.clear();
+                    }
+                });
+            });
+    }
+
+    /// Все группы настроек (страница без поиска и невидимый проход для указателя поиска).
+    fn settings_body(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
                 if self.group(ui, "расширение для браузера") || self.ext_wizard {
                     self.ui_extension(ui);
                 }
@@ -1811,12 +1962,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                 }
                 ui.add_space(14.0);
                 ui.label(RichText::new(format!("{APP_NAME} {APP_VERSION} · yt-dlp + ffmpeg · настройки сохраняются сразу")).size(10.5).color(pal().faint));
-                ui.add_space(14.0);
-            });
-        });
-        if !same(&before, &self.s) {
-            self.save_settings();
-        }
+        SET_GROUP.with(|g| g.borrow_mut().clear());
     }
 
     // ---------- подписки ----------
@@ -2631,9 +2777,15 @@ fn divider(ui: &mut egui::Ui) {
 
 /// Строка: подпись слева (подсказка при наведении), элементы управления справа.
 fn row(ui: &mut egui::Ui, label: &str, tip: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let group = SET_GROUP.with(|g| g.borrow().clone());
+    SET_INDEX.with(|i| {
+        if let Some(v) = i.borrow_mut().as_mut() {
+            v.push((group.clone(), label.to_string(), tip.to_string()));
+        }
+    });
     let open_id = egui::Id::unique(("tip", label));
     let mut open = ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
-    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), dens(38.0)), Layout::left_to_right(Align::Center), |ui| {
+    let r = ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), dens(38.0)), Layout::left_to_right(Align::Center), |ui| {
         ui.set_min_height(dens(38.0));
         ui.label(RichText::new(label).size(13.0).color(pal().text));
         if !tip.is_empty() {
@@ -2650,6 +2802,34 @@ fn row(ui: &mut egui::Ui, label: &str, tip: &str, add: impl FnOnce(&mut egui::Ui
         }
         ui.with_layout(Layout::right_to_left(Align::Center), add);
     });
+    // Пункт, выбранный в поиске по настройкам: прокрутить к нему и подсветить на пару секунд.
+    let now = ui.input(|i| i.time);
+    let hit = SET_JUMP.with(|j| {
+        let mut j = j.borrow_mut();
+        match j.as_mut() {
+            Some((g, l, at, scrolled)) if *g == group && l == label => {
+                let first = !*scrolled;
+                *scrolled = true;
+                let left = 2.2 - (now - *at);
+                if left <= 0.0 {
+                    *j = None;
+                    None
+                } else {
+                    Some((first, left))
+                }
+            }
+            _ => None,
+        }
+    });
+    if let Some((first, left)) = hit {
+        let rect = r.response.rect.expand2(Vec2::new(6.0, 1.0));
+        if first {
+            ui.scroll_to_rect(rect, Some(Align::Center));
+        }
+        let a = (left.min(1.0) * 0.55) as f32;
+        ui.painter().rect_stroke(rect, rad(8), Stroke::new(1.5, pal().text.gamma_multiply(a.max(0.15))), StrokeKind::Outside);
+        ui.ctx().request_repaint();
+    }
     if open && !tip.is_empty() {
         ui.add(egui::Label::new(RichText::new(tip).size(11.5).color(pal().muted)).wrap());
         ui.add_space(6.0);

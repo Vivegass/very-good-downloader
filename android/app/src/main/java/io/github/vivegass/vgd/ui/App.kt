@@ -338,7 +338,7 @@ fun DownloadContent(
     val active = jobs.count { it.state == JobState.QUEUED || it.state == JobState.RUNNING }
 
     fun start() {
-        val urls = text.lines().map { it.trim() }.filter { it.isNotEmpty() }.mapNotNull { io.github.vivegass.vgd.core.extractUrl(it) }
+        val urls = text.lines().map { it.trim() }.filter { it.isNotEmpty() }.mapNotNull { io.github.vivegass.vgd.core.extractUrlOrSearch(it) }
         val opts = JSONObject()
             .put("audio_only", audio)
             .put("from", from.trim())
@@ -382,7 +382,7 @@ fun DownloadContent(
                         KitTextField(
                             value = text,
                             onChange = { text = it },
-                            placeholder = "Вставьте ссылку (можно несколько, по одной в строке)",
+                            placeholder = "Ссылка или название трека (можно несколько, по одной в строке)",
                             minLines = 2,
                             trailing = {
                                 IconButton(onClick = {

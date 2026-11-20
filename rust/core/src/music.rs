@@ -55,10 +55,29 @@ pub struct MusicList {
     pub by_album: bool,
 }
 
-/// Ссылка на музыкальный сервис (идёт в музыкальную загрузку, а не в видео).
+/// Строка без ссылки — поиск трека по названию: «исполнитель — название», «название исполнитель» или просто
+/// название. Ссылки без `https://` (`youtu.be/…`, `www.site.ru`, `site.com`) поиском не считаются.
+pub fn is_search(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() || t.len() > 200 || t.contains('\n') || t.starts_with("vgdlist:") || t.contains("://") {
+        return false;
+    }
+    let first = t.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    let domain_like = |w: &str| {
+        let host = w.split('/').next().unwrap_or("");
+        host.contains('.')
+            && host.rsplit('.').next().is_some_and(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()))
+            && host.split('.').all(|p| !p.is_empty())
+    };
+    let link = first.starts_with("www.") || (domain_like(&first) && (first.contains('/') || !t.contains(' ')));
+    !link && t.chars().any(char::is_alphanumeric)
+}
+
+/// Ссылка на музыкальный сервис или поиск трека по названию (идёт в музыкальную загрузку, а не в видео).
 pub fn is_music_url(url: &str) -> bool {
     let u = url.to_ascii_lowercase();
-    u.starts_with("vgdlist:")
+    is_search(url)
+        || u.starts_with("vgdlist:")
         || u.contains("open.spotify.com/")
         || u.contains("spotify.link/")
         || u.contains("soundcloud.com/")
@@ -100,6 +119,9 @@ pub fn is_small_music(url: &str) -> bool {
 /// поэтому для них здесь `None`.
 pub fn resolve(url: &str, s: &Settings, log: &dyn Fn(String)) -> Option<Result<MusicList, String>> {
     let u = url.to_ascii_lowercase();
+    if is_search(url) {
+        return Some(Ok(search_track(url, log)));
+    }
     if let Some(path) = url.strip_prefix("vgdlist:") {
         return Some(read_list(Path::new(path)));
     }
@@ -162,6 +184,39 @@ fn vk_link(url: &str, log: &dyn Fn(String)) -> Result<MusicList, String> {
         return Ok(single(Track { artist, title, key: format!("vkname:{id}"), ..Default::default() }));
     }
     Err(format!("VK не показывает трек без входа в аккаунт, а название по ссылке узнать не удалось. {how}"))
+}
+
+/// Трек по названию. Сначала каталог Deezer (открытый API, без входа): точные исполнитель, название, альбом,
+/// длительность и обложка — по ним загрузчик находит звук на YouTube Music, SoundCloud и других и сверяет его.
+/// Deezer не нашёл или недоступен — трек из самой строки («исполнитель — название» или просто название).
+fn search_track(q: &str, log: &dyn Fn(String)) -> MusicList {
+    let q = q.trim();
+    // Первый результат — нужная песня, но часто из сборника; из её записей (то же название и исполнитель)
+    // берём самую популярную (`rank`) — обычно это оригинальный альбом.
+    let hit = get_json(&format!("https://api.deezer.com/search?q={}&limit=15", qenc(q)), &[]).ok().and_then(|v| {
+        let data = v["data"].as_array()?.clone();
+        let top = data.first()?;
+        let same = |d: &Value| normalize(&s(d, "title")) == normalize(&s(top, "title")) && s(&d["artist"], "name") == s(&top["artist"], "name");
+        let best = data.iter().filter(|d| same(d)).max_by_key(|d| d["rank"].as_i64().unwrap_or(0)).unwrap_or(top);
+        deezer_track(best, None, None)
+    });
+    let t = match hit {
+        Some(t) => {
+            log(format!("Поиск «{q}»: нашёл «{}»{}.", t.display(), if t.album.is_empty() { String::new() } else { format!(", альбом «{}»", t.album) }));
+            t
+        }
+        None => {
+            log(format!("Поиск «{q}»: в каталоге Deezer не нашёл — ищу звук прямо по этим словам."));
+            let (artist, title) = q
+                .split_once(" — ")
+                .or_else(|| q.split_once(" – "))
+                .or_else(|| q.split_once(" - "))
+                .map(|(a, b)| (a.trim().to_string(), b.trim().to_string()))
+                .unwrap_or_else(|| (String::new(), q.to_string()));
+            Track { artist, title, key: format!("search:{}", q.to_lowercase()), ..Default::default() }
+        }
+    };
+    MusicList { name: t.display(), service: "Поиск".into(), tracks: vec![t], note: None, by_album: false, single: true }
 }
 
 /// («исполнитель», «название») из og:title / <title> страницы трека VK, если она открыта без входа.
@@ -1200,6 +1255,27 @@ mod tests {
     }
 
     #[test]
+    fn search_lines() {
+        for q in ["The Weeknd — Blinding Lights", "Кино - Группа крови", "numb", "Mr. Brightside", "AC/DC Thunderstruck", "Земфира искала"] {
+            assert!(is_search(q), "{q}");
+            assert!(is_music_url(q), "{q}");
+        }
+        for l in [
+            "https://youtu.be/x",
+            "youtu.be/dQw4w9WgXcQ",
+            "www.youtube.com/watch?v=x",
+            "vk.com/audio-1_2",
+            "example.com",
+            "vgdlist:C:\\a.json",
+            "",
+            "  ",
+            "---",
+        ] {
+            assert!(!is_search(l), "{l}");
+        }
+    }
+
+    #[test]
     fn matching() {
         let t = Track { artist: "Radiohead".into(), title: "Bullet Proof ... I Wish I Was".into(), duration: Some(208.7), ..Default::default() };
         assert!(matches(&t, "Bullet Proof ... I Wish I Was", "Radiohead", Some(209.0)));
@@ -1225,5 +1301,18 @@ mod live_spotify {
         let l = super::spotify_embed("track", "3EaJDYHA0KnX88JvDhL9oa");
         println!("{:?}", l.as_ref().map(|l| (&l.name, l.tracks.len())));
         assert!(l.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod search_live {
+    /// `cargo test -p vgd-core search_live -- --ignored --nocapture` — поиск трека по названию (нужна сеть).
+    #[test]
+    #[ignore]
+    fn find() {
+        for q in ["Rick Ashley - Never Gonna Give You Up", "Кино Группа крови", "daft punk get lucky"] {
+            let l = super::search_track(q, &|m| println!("{m}"));
+            println!("  → {} | альбом {} | {:?}", l.tracks[0].display(), l.tracks[0].album, l.tracks[0].duration);
+        }
     }
 }
