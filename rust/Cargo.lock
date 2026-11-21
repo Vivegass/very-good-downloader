@@ -2260,6 +2260,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4606,7 +4608,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "1.14.0"
+version = "1.14.1"
 dependencies = [
  "uniffi",
 ]
@@ -4827,10 +4829,11 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vgd"
-version = "1.14.0"
+version = "1.14.1"
 dependencies = [
  "arboard",
  "eframe",
+ "image",
  "lexopt",
  "rfd",
  "serde",
@@ -4845,7 +4848,7 @@ dependencies = [
 
 [[package]]
 name = "vgd-android"
-version = "1.14.0"
+version = "1.14.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4855,7 +4858,7 @@ dependencies = [
 
 [[package]]
 name = "vgd-core"
-version = "1.14.0"
+version = "1.14.1"
 dependencies = [
  "base64",
  "hmac",
