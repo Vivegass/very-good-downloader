@@ -276,7 +276,7 @@ fn fetch(url: &str) -> Result<String, String> {
     req(url).text()
 }
 
-fn get_json(url: &str, headers: &[String]) -> Result<Value, String> {
+pub(crate) fn get_json(url: &str, headers: &[String]) -> Result<Value, String> {
     let mut r = req(url);
     for h in headers {
         r = r.header_line(h);
@@ -289,7 +289,7 @@ fn host(url: &str) -> &str {
     crate::http::host(url)
 }
 
-fn s(v: &Value, k: &str) -> String {
+pub(crate) fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
@@ -823,7 +823,7 @@ fn read_list(path: &Path) -> Result<MusicList, String> {
 
 // ---------- дополнительные источники для поиска ----------
 
-fn qenc(s: &str) -> String {
+pub(crate) fn qenc(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
@@ -1008,6 +1008,16 @@ fn deezer(url: &str, log: &dyn Fn(String)) -> Result<MusicList, String> {
     let (path, frag) = path.split_once('#').unwrap_or((path, ""));
     let p: Vec<&str> = path.split(['/', '?']).filter(|x| !x.is_empty()).collect();
     let find = |kind: &str| p.iter().position(|x| *x == kind).and_then(|i| p.get(i + 1)).map(|x| x.to_string());
+    // Окно дискографии: выбранные релизы (#vgd-pick=1,2,3) или популярные треки (#vgd-top).
+    if let Some(id) = find("artist").and_then(|x| x.parse::<i64>().ok()) {
+        if let Some(ids) = frag.split('&').find_map(|f| f.strip_prefix("vgd-pick=")) {
+            let only: std::collections::HashSet<i64> = ids.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            return deezer_discography_sel(id, Some(&only), log);
+        }
+        if frag.contains("vgd-top") {
+            return deezer_top(id);
+        }
+    }
     if frag.contains("vgd-discography") || p.contains(&"search") {
         let name = p.last().map(|x| percent_decode_str(x)).unwrap_or_default();
         return deezer_discography(&name, log);
@@ -1093,15 +1103,54 @@ pub fn deezer_discography(name: &str, log: &dyn Fn(String)) -> Result<MusicList,
     if name.is_empty() {
         return Err("не понял, какой исполнитель".into());
     }
-    let v = get_json(&format!("https://api.deezer.com/search/artist?q={}&limit=10", qenc(name)), &[])?;
+    deezer_discography_id(deezer_artist_id(name)?, log)
+}
+
+/// Исполнитель в каталоге Deezer по имени: точное совпадение (из самых популярных), иначе — первый в выдаче.
+pub fn deezer_artist_id(name: &str) -> Result<i64, String> {
+    let v = get_json(&format!("https://api.deezer.com/search/artist?q={}&limit=10", qenc(name.trim())), &[])?;
     let want = normalize(name);
     let list = v["data"].as_array().cloned().unwrap_or_default();
-    // Сначала точное совпадение имени (из самых популярных), иначе — первый в выдаче.
     let pick = list.iter().find(|a| normalize(&s(a, "name")) == want).or(list.first()).ok_or("исполнитель не найден в каталоге")?;
-    deezer_discography_id(pick["id"].as_i64().unwrap_or(0), log)
+    pick["id"].as_i64().filter(|i| *i > 0).ok_or_else(|| "исполнитель не найден в каталоге".into())
+}
+
+/// Ссылка на исполнителя (Deezer, Spotify, Apple Music) → он же в каталоге Deezer: для окна дискографии.
+/// None — это не ссылка на исполнителя (или сервис, где дискография берётся иначе).
+pub fn artist_link(url: &str) -> Option<Result<i64, String>> {
+    let u = url.to_lowercase();
+    if u.contains("deezer.com/") && u.contains("/artist/") && !u.contains('#') {
+        let id = u.split("/artist/").nth(1)?.split(['/', '?']).next()?.parse::<i64>().ok()?;
+        return Some(Ok(id));
+    }
+    if u.contains("open.spotify.com/") && u.contains("/artist/") {
+        let (kind, id) = spotify_ref(url)?;
+        if kind != "artist" {
+            return None;
+        }
+        return Some(spotify_embed(&kind, &id).and_then(|l| deezer_artist_id(&if l.name.is_empty() { artist_of(&l) } else { l.name.clone() })));
+    }
+    if u.contains("music.apple.com/") && u.contains("/artist/") {
+        return Some(apple(url).and_then(|l| deezer_artist_id(&artist_of(&l))));
+    }
+    None
+}
+
+/// Популярные треки исполнителя (Deezer, до 50).
+fn deezer_top(id: i64) -> Result<MusicList, String> {
+    let api = "https://api.deezer.com";
+    let artist = get_json(&format!("{api}/artist/{id}"), &[])?;
+    let v = get_json(&format!("{api}/artist/{id}/top?limit=50"), &[])?;
+    let tracks: Vec<Track> = v["data"].as_array().into_iter().flatten().filter_map(|t| deezer_track(t, None, None)).collect();
+    Ok(MusicList { name: format!("{} — популярное", s(&artist, "name")), service: "Deezer".into(), tracks, note: None, by_album: false, single: false })
 }
 
 fn deezer_discography_id(id: i64, log: &dyn Fn(String)) -> Result<MusicList, String> {
+    deezer_discography_sel(id, None, log)
+}
+
+/// Дискография; `only` — только эти релизы (выбор в окне дискографии).
+fn deezer_discography_sel(id: i64, only: Option<&std::collections::HashSet<i64>>, log: &dyn Fn(String)) -> Result<MusicList, String> {
     let api = "https://api.deezer.com";
     let artist = get_json(&format!("{api}/artist/{id}"), &[])?;
     let name = s(&artist, "name");
@@ -1113,8 +1162,14 @@ fn deezer_discography_id(id: i64, log: &dyn Fn(String)) -> Result<MusicList, Str
         next = page["next"].as_str().map(String::from);
     }
     // Одинаковые альбомы (обычная и «чистая» версии) — один раз; сначала альбомы, потом EP и синглы, по дате.
-    let mut seen = std::collections::HashSet::new();
-    albums.retain(|a| seen.insert(normalize(&s(a, "title"))));
+    // Выбранные в окне — ровно они.
+    match only {
+        Some(ids) => albums.retain(|a| a["id"].as_i64().is_some_and(|i| ids.contains(&i))),
+        None => {
+            let mut seen = std::collections::HashSet::new();
+            albums.retain(|a| seen.insert(normalize(&s(a, "title"))));
+        }
+    }
     let rank = |a: &Value| match s(a, "record_type").as_str() {
         "album" => 0,
         "ep" => 1,

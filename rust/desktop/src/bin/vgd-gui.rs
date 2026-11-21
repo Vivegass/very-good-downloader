@@ -398,6 +398,63 @@ enum Event {
     YandexCode(Option<(String, String)>),
     /// обновление программы: проверка, прогресс скачивания (gui/update_ui.rs)
     Update(update_ui::UpdEvent),
+    /// выбор по названию: запрос и что нашлось в каталоге
+    Catalog(String, Result<vgd::catalog::Catalog, String>),
+    /// окно дискографии: номер открытия окна и релизы исполнителя
+    Artist(u64, Result<vgd::catalog::Artist, String>),
+    /// обложка загружена (None — не вышло)
+    Cover(String, Option<egui::ColorImage>),
+}
+
+/// Выбор по названию: что спрошено у каталога, что показано, когда менялся текст.
+#[derive(Default)]
+struct CatState {
+    typed: String,
+    typed_at: f64,
+    asked: String,
+    shown: String,
+    res: Option<Result<vgd::catalog::Catalog, String>>,
+    loading: bool,
+    /// показать все найденные, а не первые
+    more: bool,
+    /// список закрыт для этого текста
+    closed: String,
+}
+
+/// Окно дискографии.
+struct Disco {
+    /// номер открытия: ответ от прошлого окна не попадёт в новое
+    token: u64,
+    name: String,
+    picture: String,
+    artist: Option<Result<vgd::catalog::Artist, String>>,
+    picked: Vec<bool>,
+    /// альбомы, EP, синглы, сборники
+    kinds: [bool; 4],
+    live: bool,
+    nodup: bool,
+}
+
+const DISCO_KINDS: [(&str, &str); 4] = [("album", "альбомы"), ("ep", "EP"), ("single", "синглы"), ("compile", "сборники")];
+
+impl Disco {
+    fn new(token: u64, name: String, picture: String) -> Self {
+        Disco { token, name, picture, artist: None, picked: Vec::new(), kinds: [true, true, false, false], live: false, nodup: true }
+    }
+
+    /// Галочки по фильтрам сверху (ручные галочки сбрасываются при смене фильтра).
+    fn apply(&mut self) {
+        if let Some(Ok(a)) = &self.artist {
+            self.picked = a
+                .releases
+                .iter()
+                .map(|r| {
+                    let k = DISCO_KINDS.iter().position(|(x, _)| *x == r.kind).unwrap_or(0);
+                    self.kinds[k] && (self.live || !r.live) && (!self.nodup || !r.dup)
+                })
+                .collect();
+        }
+    }
 }
 
 enum Action {
@@ -430,6 +487,15 @@ struct App {
     preset_new: String,
     /// вход в Яндекс идёт: код и страница для ввода
     ya_code: Option<(String, String)>,
+    /// выбор по названию под полем ссылок
+    cat: CatState,
+    /// окно дискографии
+    disco: Option<Disco>,
+    disco_seq: u64,
+    /// «--disco=27» — открыть окно дискографии исполнителя Deezer при запуске (для снимков окна)
+    start_disco: Option<i64>,
+    /// обложки по адресу: None — грузится или не загрузилась
+    covers: std::collections::HashMap<String, Option<egui::TextureHandle>>,
     /// «войти через браузер» нажато: какой сервис и когда (ждём куки от расширения)
     acc_wait: Option<(&'static str, f64)>,
     log: Vec<String>,
@@ -538,6 +604,11 @@ impl App {
                 ctx.request_repaint();
             });
         }
+        // Прогрев сети: на некоторых компьютерах первый запрос процесса ждёт секунды (медленный DNS) —
+        // пусть это случится сейчас, а не когда человек начнёт искать трек по названию.
+        std::thread::spawn(|| {
+            let _ = vgd::http::get("https://api.deezer.com/infos").timeout(20).send();
+        });
         // Spotify обновился и кнопки «скачать» пропали — вернуть (только пока Spotify закрыт).
         if s.spotify_app {
             let tx = tx.clone();
@@ -577,12 +648,18 @@ impl App {
                 )
             },
             s,
-            urls: String::new(),
+            // «--field=daft punk» — открыть с этим текстом в поле (для снимков окна)
+            urls: std::env::args().find_map(|a| a.strip_prefix("--field=").map(String::from)).unwrap_or_default(),
             tx,
             rx,
             edit_job: None,
             preset_new: String::new(),
             ya_code: None,
+            cat: CatState::default(),
+            disco: None,
+            disco_seq: 0,
+            start_disco: std::env::args().find_map(|a| a.strip_prefix("--disco=").and_then(|x| x.parse().ok())),
+            covers: std::collections::HashMap::new(),
             acc_wait: None,
             log: Vec::new(),
             log_find: String::new(),
@@ -673,6 +750,18 @@ impl App {
         if lines.is_empty() {
             return;
         }
+        // Одна ссылка на исполнителя (Deezer, Spotify, Apple Music) — окно дискографии: что именно качать.
+        if let [one] = lines.as_slice() {
+            let u = one.to_lowercase();
+            if u.contains("/artist/") && !u.contains('#') && (u.contains("deezer.com/") || u.contains("open.spotify.com/") || u.contains("music.apple.com/")) {
+                let link = one.clone();
+                self.urls.clear();
+                self.open_disco(ctx, "исполнитель".into(), String::new(), move || {
+                    vgd::music::artist_link(&link).unwrap_or_else(|| Err("не понял ссылку на исполнителя".into()))
+                });
+                return;
+            }
+        }
         self.save_settings();
         let opts = self.next_opts.clone();
         for url in lines {
@@ -681,6 +770,325 @@ impl App {
         self.urls.clear();
         self.page = Page::Download;
         self.start_worker(ctx);
+    }
+
+    /// Обложка по адресу (грузится в фоне; пока нет — None).
+    fn cover(&mut self, ctx: &egui::Context, url: &str) -> Option<egui::TextureHandle> {
+        if url.is_empty() {
+            return None;
+        }
+        if let Some(t) = self.covers.get(url) {
+            return t.clone();
+        }
+        self.covers.insert(url.to_string(), None);
+        let (tx, ctx, url) = (self.tx.clone(), ctx.clone(), url.to_string());
+        std::thread::spawn(move || {
+            let img = vgd::http::get(&url)
+                .timeout(20)
+                .retries(1)
+                .send()
+                .ok()
+                .and_then(|r| image::load_from_memory(&r.body).ok())
+                .map(|i| {
+                    let i = i.thumbnail(112, 112).to_rgba8();
+                    egui::ColorImage::from_rgba_unmultiplied([i.width() as usize, i.height() as usize], i.as_raw())
+                });
+            let _ = tx.send(Event::Cover(url, img));
+            ctx.request_repaint();
+        });
+        None
+    }
+
+    /// Открыть окно дискографии; `find` (в фоне) находит исполнителя в каталоге.
+    fn open_disco(&mut self, ctx: &egui::Context, name: String, picture: String, find: impl FnOnce() -> Result<i64, String> + Send + 'static) {
+        self.disco_seq += 1;
+        let token = self.disco_seq;
+        self.disco = Some(Disco::new(token, name, picture));
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let r = find().and_then(vgd::catalog::artist);
+            let _ = tx.send(Event::Artist(token, r));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Скачать выбранное в выборе по названию / окне дискографии.
+    fn enqueue_now(&mut self, ctx: &egui::Context, url: String) {
+        self.save_settings();
+        let opts = self.next_opts.clone();
+        self.enqueue(url, opts, None);
+        self.page = Page::Download;
+        self.start_worker(ctx);
+    }
+
+    /// Выбор по названию: исполнители, альбомы и треки из каталога под полем ссылок.
+    fn ui_catalog(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let line = self.urls.trim().to_string();
+        let one = !line.is_empty() && !line.contains('\n') && line.chars().count() >= 3 && vgd::music::is_search(&line);
+        if !one || self.cat.closed == line {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        if self.cat.typed != line {
+            self.cat.typed = line.clone();
+            self.cat.typed_at = now;
+            self.cat.more = false;
+        }
+        // Спрашиваем каталог, когда текст не меняется полсекунды.
+        if self.cat.asked != line {
+            if now - self.cat.typed_at >= 0.45 {
+                self.cat.asked = line.clone();
+                self.cat.loading = true;
+                let (tx, ctx2, q) = (self.tx.clone(), ctx.clone(), line.clone());
+                std::thread::spawn(move || {
+                    let r = vgd::catalog::search(&q);
+                    let _ = tx.send(Event::Catalog(q, r));
+                    ctx2.request_repaint();
+                });
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
+        }
+        let fresh = self.cat.shown == line;
+        if !fresh && !self.cat.loading {
+            return;
+        }
+        let res = if fresh { self.cat.res.clone() } else { None };
+        enum Act {
+            Url(String),
+            Artist(i64, String, String),
+        }
+        let mut act = None;
+        let mut close = false;
+        let mut more = self.cat.more;
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                if res.is_none() {
+                    ui.spinner();
+                }
+                ui.label(RichText::new(if res.is_none() { "ищу в каталоге…" } else { "что скачать?" }).size(12.0).color(pal().muted));
+                ui.label(RichText::new("ctrl+enter — сразу лучший трек").size(11.0).color(pal().faint));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if icon_button(ui, I_CLOSE, "скрыть список").clicked() {
+                        close = true;
+                    }
+                });
+            });
+            let Some(res) = res else { return };
+            let c = match res {
+                Err(e) => {
+                    hint(ui, &format!("каталог не ответил: {e}. ctrl+enter всё равно найдёт трек."));
+                    return;
+                }
+                Ok(c) if c.is_empty() => {
+                    hint(ui, "в каталоге ничего не нашлось — ctrl+enter поищет трек по названию на youtube music и других.");
+                    return;
+                }
+                Ok(c) => c,
+            };
+            let (na, nb, nt) = if more { (c.artists.len(), c.albums.len(), c.tracks.len()) } else { (1, 3, 4) };
+            let sections: [(&str, &[vgd::catalog::Hit], usize); 3] =
+                [("исполнители", &c.artists, na), ("альбомы", &c.albums, nb), ("треки", &c.tracks, nt)];
+            for (title, hits, n) in sections {
+                if hits.is_empty() {
+                    continue;
+                }
+                ui.add_space(4.0);
+                ui.label(RichText::new(title).size(11.0).color(pal().faint));
+                for (k, h) in hits.iter().take(n).enumerate() {
+                    let tex = self.cover(ctx, &h.cover);
+                    let r = ui
+                        .scope(|ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                cover_img(ui, tex.as_ref(), 34.0, h.kind == "artist");
+                                ui.vertical(|ui| {
+                                    ui.add(egui::Label::new(RichText::new(&h.title).size(13.0).color(pal().text)).truncate());
+                                    ui.add(egui::Label::new(RichText::new(&h.sub).size(11.0).color(pal().muted)).truncate());
+                                });
+                            });
+                        })
+                        .response;
+                    let r = ui.interact(r.rect, egui::Id::unique(("cat-hit", title, k)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let tip = if h.kind == "artist" { "дискография — выбрать, что скачать" } else { "скачать" };
+                    let r = r.on_hover_text(tip);
+                    if r.hovered() {
+                        ui.painter().rect_filled(r.rect.expand(2.0), rad(6), pal().text.gamma_multiply(0.05));
+                        let t = if h.kind == "artist" { "дискография ›" } else { "↓ скачать" };
+                        ui.painter().text(r.rect.right_center() - Vec2::new(8.0, 0.0), Align2::RIGHT_CENTER, t, FontId::monospace(11.5), pal().text);
+                    }
+                    if r.clicked() {
+                        act = Some(if h.kind == "artist" { Act::Artist(h.id, h.title.clone(), h.cover.clone()) } else { Act::Url(h.url.clone()) });
+                    }
+                }
+            }
+            let hidden = c.artists.len().saturating_sub(1) + c.albums.len().saturating_sub(3) + c.tracks.len().saturating_sub(4);
+            if !more && hidden > 0 {
+                ui.add_space(4.0);
+                if small_pill(ui, &format!("ещё {hidden}")).clicked() {
+                    more = true;
+                }
+            }
+        });
+        ui.add_space(8.0);
+        self.cat.more = more;
+        if close {
+            self.cat.closed = line.clone();
+        }
+        match act {
+            Some(Act::Url(u)) => {
+                self.urls.clear();
+                self.enqueue_now(ctx, u);
+            }
+            Some(Act::Artist(id, name, pic)) => self.open_disco(ctx, name, pic, move || Ok(id)),
+            None => {}
+        }
+    }
+
+    /// Окно дискографии: какие релизы исполнителя качать.
+    fn ui_disco(&mut self, ctx: &egui::Context) {
+        let Some(mut d) = self.disco.take() else { return };
+        let mut close = false;
+        let mut go: Option<String> = None;
+        let mut subscribe = false;
+        let pic = self.cover(ctx, &d.picture);
+        let covers: Vec<Option<egui::TextureHandle>> = match &d.artist {
+            Some(Ok(a)) => a.releases.iter().map(|r| self.cover(ctx, &r.cover)).collect(),
+            _ => Vec::new(),
+        };
+        let subscribed = match &d.artist {
+            Some(Ok(a)) => self.s.subscriptions.iter().any(|s| s.url == format!("https://www.deezer.com/artist/{}", a.id)),
+            _ => false,
+        };
+        let screen = ctx.content_rect();
+        let w = (screen.width() - 60.0).clamp(300.0, 620.0);
+        let resp = egui::Modal::new(egui::Id::unique("disco")).show(ctx, |ui| {
+            ui.set_width(w);
+            ui.horizontal(|ui| {
+                cover_img(ui, pic.as_ref(), 44.0, true);
+                ui.vertical(|ui| {
+                    ui.label(heading(&d.name.to_lowercase(), 16.0));
+                    ui.label(RichText::new("дискография · папки «год - альбом»").size(11.5).color(pal().muted));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                    if icon_button(ui, I_CLOSE, "закрыть").clicked() {
+                        close = true;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            let a = match &d.artist {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("загружаю релизы…").size(12.5).color(pal().muted));
+                    });
+                    return;
+                }
+                Some(Err(e)) => {
+                    hint(ui, &format!("не вышло: {e}"));
+                    return;
+                }
+                Some(Ok(a)) => a.clone(),
+            };
+            // Фильтры: типы релизов, концертные, без повторов.
+            let mut changed = false;
+            ui.horizontal_wrapped(|ui| {
+                for (i, (k, label)) in DISCO_KINDS.iter().enumerate() {
+                    let n = a.releases.iter().filter(|r| r.kind == *k).count();
+                    if n == 0 {
+                        continue;
+                    }
+                    if chip(ui, &format!("{label} {n}"), d.kinds[i]).clicked() {
+                        d.kinds[i] = !d.kinds[i];
+                        changed = true;
+                    }
+                }
+                let nl = a.releases.iter().filter(|r| r.live).count();
+                if nl > 0 && chip(ui, &format!("концертные {nl}"), d.live).clicked() {
+                    d.live = !d.live;
+                    changed = true;
+                }
+                if chip(ui, "без повторов", d.nodup).on_hover_text("deluxe, remaster, anniversary, clean — одна версия").clicked() {
+                    d.nodup = !d.nodup;
+                    changed = true;
+                }
+            });
+            if changed {
+                d.apply();
+            }
+            ui.add_space(6.0);
+            let list_h = (screen.height() - 300.0).clamp(160.0, 420.0);
+            egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, true]).show(ui, |ui| {
+                for (i, r) in a.releases.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        if let Some(p) = d.picked.get_mut(i) {
+                            ui.checkbox(p, "");
+                        }
+                        cover_img(ui, covers.get(i).and_then(|c| c.as_ref()), 28.0, false);
+                        let kind = DISCO_KINDS.iter().find(|(k, _)| *k == r.kind).map(|(_, l)| *l).unwrap_or("");
+                        let mut marks = vec![kind.trim_end_matches('ы').trim_end_matches('и').to_string()];
+                        if r.live {
+                            marks.push("концертный".into());
+                        }
+                        if r.dup {
+                            marks.push("другая версия".into());
+                        }
+                        ui.label(RichText::new(&r.year).size(12.0).color(pal().faint));
+                        // Название обрезается «…» до пометок справа, а не наезжает на них.
+                        let marks = marks.join(" · ");
+                        let mw = text_size(ui, &marks, &FontId::monospace(11.0)).x + 12.0;
+                        ui.scope(|ui| {
+                            ui.set_max_width((ui.available_width() - mw).max(60.0));
+                            ui.add(egui::Label::new(RichText::new(&r.title).size(12.5).color(pal().text)).truncate());
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(RichText::new(&marks).size(11.0).color(pal().faint));
+                        });
+                    });
+                }
+            });
+            ui.add_space(8.0);
+            let n = d.picked.iter().filter(|p| **p).count();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("выбрано: {n} из {}", a.releases.len())).size(12.0).color(pal().muted));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if pill(ui, Some(I_DOWNLOAD), "скачать", true, n > 0).clicked() && n > 0 {
+                        let ids: Vec<i64> = a.releases.iter().zip(&d.picked).filter(|(_, p)| **p).map(|(r, _)| r.id).collect();
+                        go = Some(vgd::catalog::pick_url(a.id, &ids));
+                    }
+                    if small_pill(ui, "популярное").on_hover_text("50 самых популярных треков одной папкой").clicked() {
+                        go = Some(vgd::catalog::top_url(a.id));
+                    }
+                    if !subscribed
+                        && small_pill(ui, "подписаться").on_hover_text("новые релизы исполнителя будут качаться сами (вкладка «подписки»)").clicked()
+                    {
+                        subscribe = true;
+                    }
+                });
+            });
+        });
+        if resp.should_close() {
+            close = true;
+        }
+        if subscribe {
+            if let Some(Ok(a)) = &d.artist {
+                let url = format!("https://www.deezer.com/artist/{}", a.id);
+                self.s.subscriptions.push(Subscription { url, name: a.name.clone(), audio_only: true, ..Default::default() });
+                let i = self.s.subscriptions.len() - 1;
+                self.save_settings();
+                self.check_subs(Some(i));
+                self.status = format!("подписка на «{}»: новые релизы будут качаться сами", a.name.to_lowercase());
+            }
+        }
+        if let Some(u) = go {
+            self.urls.clear();
+            self.enqueue_now(ctx, u);
+            close = true;
+        }
+        if !close {
+            self.disco = Some(d);
+        }
     }
 
     /// Поставить ссылку в очередь.
@@ -934,6 +1342,29 @@ impl App {
                 },
                 Event::Log(m) => self.add_log(m),
                 Event::Update(e) => self.on_update_event(e),
+                Event::Catalog(q, r) => {
+                    if q == self.cat.asked {
+                        self.cat.res = Some(r);
+                        self.cat.shown = q;
+                        self.cat.loading = false;
+                    }
+                }
+                Event::Artist(token, r) => {
+                    if let Some(d) = self.disco.as_mut().filter(|d| d.token == token) {
+                        if let Ok(a) = &r {
+                            d.name = a.name.clone();
+                            if !a.picture.is_empty() {
+                                d.picture = a.picture.clone();
+                            }
+                        }
+                        d.artist = Some(r);
+                        d.apply();
+                    }
+                }
+                Event::Cover(url, img) => {
+                    let tex = img.map(|ci| ctx.load_texture(&url, ci, egui::TextureOptions::LINEAR));
+                    self.covers.insert(url, tex);
+                }
                 Event::YandexCode(c) => {
                     if c.is_none() {
                         self.side_task = false;
@@ -1200,6 +1631,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                         });
                     });
                 ui.add_space(8.0);
+                self.ui_catalog(ui, &ctx);
 
                 // Музыкальная ссылка в поле — вместо качества видео показываем формат звука.
                 let music_mode = self.urls.lines().any(|l| vgd::music::is_music_url(l.trim()));
@@ -2719,6 +3151,10 @@ impl eframe::App for App {
             ctx.set_zoom_factor(want);
         }
         self.handle_events(&ctx);
+        if let Some(id) = self.start_disco.take() {
+            self.open_disco(&ctx, "исполнитель".into(), String::new(), move || Ok(id));
+        }
+        self.ui_disco(&ctx);
         if self.s.clipboard_watch {
             let now = ctx.input(|i| i.time);
             if now - self.clip_at > 1.0 {
@@ -2843,6 +3279,35 @@ fn auto_zoom(scale: f32, raw_w: f32) -> f32 {
         base
     };
     ((z * 20.0).round() / 20.0).clamp(0.5, 3.0)
+}
+
+/// Обложка (или кружок-фото у исполнителя); пока грузится — серый квадрат.
+fn cover_img(ui: &mut egui::Ui, tex: Option<&egui::TextureHandle>, size: f32, round: bool) {
+    let r = if round { (size / 2.0) as u8 } else { rad(6) };
+    match tex {
+        Some(t) => {
+            ui.add(egui::Image::new(t).fit_to_exact_size(Vec2::splat(size)).corner_radius(r));
+        }
+        None => {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+            ui.painter().rect_filled(rect, r, pal().surface_hi);
+        }
+    }
+}
+
+/// Переключатель-фильтр: включён — светлый, выключен — контур.
+fn chip(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
+    let font = FontId::monospace(12.0);
+    let size = text_size(ui, text, &font) + Vec2::new(20.0, 10.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let (fill, color) = if on { (pal().text, pal().bg) } else { (Color32::TRANSPARENT, if resp.hovered() { pal().text } else { pal().muted }) };
+    ui.painter().rect_filled(rect, btn_rad(10), fill);
+    if !on {
+        ui.painter().rect_stroke(rect, btn_rad(10), Stroke::new(1.0, pal().border), StrokeKind::Inside);
+    }
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, font, color);
+    resp
 }
 
 /// Колонка по центру шириной до layout.column из темы.

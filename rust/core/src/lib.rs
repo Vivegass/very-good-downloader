@@ -3,6 +3,7 @@
 
 pub mod accounts;
 pub mod appinfo;
+pub mod catalog;
 pub mod downloader;
 pub mod fingerprint;
 pub mod http;

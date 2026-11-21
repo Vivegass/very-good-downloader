@@ -1,7 +1,7 @@
 //! Very Good Downloader для Windows: окно (vgd-gui) и консоль (vgd).
 //! Ядро — `vgd_core`; его модули доступны отсюда под прежними именами (`vgd::downloader`, …).
 
-pub use vgd_core::{accounts, downloader, fingerprint, http, media, music, net, queue, settings, sort, update, vk, yandex_acc};
+pub use vgd_core::{accounts, catalog, downloader, fingerprint, http, media, music, net, queue, settings, sort, update, vk, yandex_acc};
 
 pub mod appinfo;
 pub mod ipc;

@@ -717,6 +717,103 @@ pub fn yandex_logout() {
     vgd_core::yandex_acc::logout()
 }
 
+// ---------- выбор по названию и дискография (каталог Deezer) ----------
+
+/// Найденное: исполнитель / альбом / трек.
+#[derive(uniffi::Record)]
+pub struct CatalogHit {
+    /// "artist" / "album" / "track"
+    pub kind: String,
+    pub id: i64,
+    pub title: String,
+    pub sub: String,
+    pub cover: String,
+    /// ссылка в очередь (у исполнителя — для окна дискографии)
+    pub url: String,
+}
+
+#[derive(uniffi::Record)]
+pub struct CatalogResult {
+    pub artists: Vec<CatalogHit>,
+    pub albums: Vec<CatalogHit>,
+    pub tracks: Vec<CatalogHit>,
+}
+
+fn catalog_hits(v: Vec<vgd_core::catalog::Hit>) -> Vec<CatalogHit> {
+    v.into_iter().map(|h| CatalogHit { kind: h.kind, id: h.id, title: h.title, sub: h.sub, cover: h.cover, url: h.url }).collect()
+}
+
+/// Поиск по названию: исполнители, альбомы, треки.
+#[uniffi::export]
+pub fn catalog_search(query: String) -> Result<CatalogResult, VgdError> {
+    let c = vgd_core::catalog::search(&query).map_err(fail)?;
+    Ok(CatalogResult { artists: catalog_hits(c.artists), albums: catalog_hits(c.albums), tracks: catalog_hits(c.tracks) })
+}
+
+#[derive(uniffi::Record)]
+pub struct ArtistRelease {
+    pub id: i64,
+    pub title: String,
+    /// "album" / "ep" / "single" / "compile"
+    pub kind: String,
+    pub year: String,
+    pub cover: String,
+    pub live: bool,
+    pub dup: bool,
+    /// отмечен по умолчанию (альбомы и EP без концертных и повторов)
+    pub pick: bool,
+}
+
+#[derive(uniffi::Record)]
+pub struct ArtistInfo {
+    pub id: i64,
+    pub name: String,
+    pub picture: String,
+    pub releases: Vec<ArtistRelease>,
+}
+
+/// Релизы исполнителя Deezer для окна дискографии.
+#[uniffi::export]
+pub fn artist_info(id: i64) -> Result<ArtistInfo, VgdError> {
+    let a = vgd_core::catalog::artist(id).map_err(fail)?;
+    let releases = a
+        .releases
+        .iter()
+        .map(|r| ArtistRelease {
+            id: r.id,
+            title: r.title.clone(),
+            kind: r.kind.clone(),
+            year: r.year.clone(),
+            cover: r.cover.clone(),
+            live: r.live,
+            dup: r.dup,
+            pick: vgd_core::catalog::default_pick(r),
+        })
+        .collect();
+    Ok(ArtistInfo { id: a.id, name: a.name, picture: a.picture, releases })
+}
+
+/// Ссылка на исполнителя (Deezer, Spotify, Apple Music) → id в каталоге Deezer; None — не ссылка на исполнителя.
+#[uniffi::export]
+pub fn artist_link_id(url: String) -> Result<Option<i64>, VgdError> {
+    match vgd_core::music::artist_link(&url) {
+        None => Ok(None),
+        Some(r) => r.map(Some).map_err(fail),
+    }
+}
+
+/// Ссылка «скачать выбранные релизы».
+#[uniffi::export]
+pub fn discography_url(artist_id: i64, ids: Vec<i64>) -> String {
+    vgd_core::catalog::pick_url(artist_id, &ids)
+}
+
+/// Ссылка «популярные треки исполнителя».
+#[uniffi::export]
+pub fn artist_top_url(artist_id: i64) -> String {
+    vgd_core::catalog::top_url(artist_id)
+}
+
 // ---------- аккаунты с куками (YouTube / YouTube Music, SoundCloud) ----------
 
 /// Есть ли вход: в файле кук сервиса («youtube», «soundcloud») есть кука входа.

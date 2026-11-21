@@ -29,6 +29,8 @@ rfd = "0.17"
 arboard = { version = "3", default-features = false }
 tray-icon = "0.26"
 wry = "0.57.1"
+# обложки в выборе по названию и окне дискографии (Deezer отдаёт JPEG)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 tao = "0.37.2"
 
 [target.'cfg(windows)'.dependencies]

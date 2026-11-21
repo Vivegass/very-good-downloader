@@ -106,7 +106,9 @@ import io.github.vivegass.vgd.Updater
 import io.github.vivegass.vgd.Vgd
 import io.github.vivegass.vgd.core.JobInfo
 import io.github.vivegass.vgd.core.JobState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 // ---------- каркас ----------
@@ -308,6 +310,8 @@ fun DownloadContent(
     var preset by rememberSaveable { mutableStateOf("") }
     var presetSheet by remember { mutableStateOf(false) }
     var shareHint by remember { mutableStateOf(false) }
+    // лист дискографии (исполнитель из выбора по названию или ссылка на исполнителя)
+    var disco by remember { mutableStateOf<DiscoReq?>(null) }
     val snack = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var hidden by remember { mutableStateOf(setOf<ULong>()) }
@@ -337,16 +341,45 @@ fun DownloadContent(
         .filter { it.id !in hidden }
     val active = jobs.count { it.state == JobState.QUEUED || it.state == JobState.RUNNING }
 
+    fun opts() = JSONObject()
+        .put("audio_only", audio)
+        .put("from", from.trim())
+        .put("to", to.trim())
+        .put("split_tracks", split)
+        .put("preset", preset)
+        .toString()
+
     fun start() {
+        // Ссылка на исполнителя — сначала выбрать, какие релизы качать.
+        if (isArtistLink(text)) {
+            disco = DiscoReq(null, text.trim(), "Исполнитель", "")
+            text = ""
+            return
+        }
         val urls = text.lines().map { it.trim() }.filter { it.isNotEmpty() }.mapNotNull { io.github.vivegass.vgd.core.extractUrlOrSearch(it) }
-        val opts = JSONObject()
-            .put("audio_only", audio)
-            .put("from", from.trim())
-            .put("to", to.trim())
-            .put("split_tracks", split)
-            .put("preset", preset)
-        actions.add(urls, opts.toString())
+        actions.add(urls, opts())
         if (urls.isNotEmpty()) text = ""
+    }
+
+    /** Подписка на исполнителя: новые релизы будут качаться сами (как у подписок на каналы). */
+    fun subscribe(url: String, name: String) {
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val o = JSONObject(io.github.vivegass.vgd.core.settingsJson())
+                    val a = o.optJSONArray("subscriptions") ?: org.json.JSONArray()
+                    if ((0 until a.length()).none { a.getJSONObject(it).optString("url") == url }) {
+                        a.put(JSONObject().put("url", url).put("name", name).put("audio_only", true).put("max_age_days", 0).put("seeded", false).put("last_check", 0))
+                    }
+                    o.put("subscriptions", a)
+                    io.github.vivegass.vgd.core.saveSettingsJson(o.toString())
+                    Vgd.coreOrNull()?.reloadSettings()
+                }
+            }
+            io.github.vivegass.vgd.DownloadService.start(ctx)
+            act { it.checkSubscriptions(url) }
+            snack.showSnackbar("Подписка на «$name»: новые релизы будут качаться сами")
+        }
     }
 
     fun remove(j: JobInfo) {
@@ -391,6 +424,14 @@ fun DownloadContent(
                                     if (t.isNotBlank()) text = if (text.isBlank()) t.trim() else text.trimEnd() + "\n" + t.trim()
                                 }) { Icon(Icons.Rounded.ContentPaste, contentDescription = "Вставить") }
                             },
+                        )
+                        CatalogResults(
+                            text,
+                            onUrl = { u ->
+                                actions.add(listOf(u), opts())
+                                text = ""
+                            },
+                            onArtist = { disco = it },
                         )
                         KitSegmented(listOf("Видео", "Только звук"), if (audio) 1 else 0, { audio = it == 1 })
                         if (showOpts) {
@@ -516,6 +557,20 @@ fun DownloadContent(
         )
     }
     if (shareHint) ShareHintDialog { shareHint = false }
+    disco?.let { req ->
+        DiscoSheet(
+            req,
+            onDismiss = { disco = null },
+            onDownload = { u ->
+                actions.add(listOf(u), opts())
+                disco = null
+            },
+            onSubscribe = { url, name ->
+                subscribe(url, name)
+                disco = null
+            },
+        )
+    }
 }
 
 private fun JobInfo.isActive() = state == JobState.QUEUED || state == JobState.RUNNING || state == JobState.PAUSED
