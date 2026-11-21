@@ -1164,7 +1164,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                 ui.add_space(18.0);
                 ui.horizontal(|ui| {
                     ui.label(heading("very good downloader", 17.0));
-                    ui.label(RichText::new("youtube · spotify · apple music · soundcloud · яндекс музыка · vk…").size(11.5).color(pal().faint));
+                    ui.label(RichText::new("youtube · spotify · apple music · deezer · tidal · soundcloud · яндекс музыка · vk…").size(11.5).color(pal().faint));
                 });
                 ui.add_space(10.0);
                 self.ui_update_banner(ui);

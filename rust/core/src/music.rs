@@ -85,6 +85,9 @@ pub fn is_music_url(url: &str) -> bool {
         || u.contains("music.yandex.")
         || u.contains("music.apple.com/")
         || u.contains("deezer.com/")
+        || u.contains("tidal.com/")
+        || u.contains("splice.com/")
+        || other_service(&u).is_some()
         || ((u.contains("vk.com/") || u.contains("vk.ru/")) && (u.contains("/music") || u.contains("/audio")))
 }
 
@@ -140,6 +143,15 @@ pub fn resolve(url: &str, s: &Settings, log: &dyn Fn(String)) -> Option<Result<M
     }
     if u.contains("music.yandex.") {
         return Some(yandex(url));
+    }
+    if u.contains("tidal.com/") {
+        return Some(tidal(url, log));
+    }
+    if u.contains("splice.com/") {
+        return Some(Err(splice(url)));
+    }
+    if let Some(service) = other_service(&u) {
+        return Some(other_music(url, service, s, log));
     }
     if u.contains("vk.com/") || u.contains("vk.ru/") {
         return Some(vk_link(url, log));
@@ -1188,6 +1200,206 @@ pub fn music_root(s: &Settings) -> PathBuf {
     PathBuf::from(&s.out_dir).join("Музыка")
 }
 
+// ---------- Tidal, МТС Музыка, Splice и другие сервисы ----------
+
+/// Сервисы, у которых по ссылке берём только название трека (через song.link, если задан ключ),
+/// а звук ищем на YouTube Music, SoundCloud и других. Страницы у них открываются только в браузере.
+const OTHER_MUSIC: &[(&str, &str)] = &[
+    ("music.amazon.", "Amazon Music"),
+    ("amazon.com/music", "Amazon Music"),
+    ("qobuz.com", "Qobuz"),
+    ("zvuk.com", "Звук"),
+    ("beatport.com", "Beatport"),
+    ("shazam.com", "Shazam"),
+    ("pandora.com", "Pandora"),
+    ("napster.com", "Napster"),
+    ("anghami.com", "Anghami"),
+    ("boomplay.com", "Boomplay"),
+    ("music.mts.ru", "МТС Музыка"),
+];
+
+fn other_service(u: &str) -> Option<&'static str> {
+    OTHER_MUSIC.iter().find(|(h, _)| u.contains(h)).map(|(_, name)| *name)
+}
+
+/// Сегменты пути ссылки в нижнем регистре: tidal.com/browse/track/123 → ["browse", "track", "123"].
+fn path_segs(url: &str) -> Vec<String> {
+    let u = url.split("://").nth(1).unwrap_or(url);
+    let path = u.split(['?', '#']).next().unwrap_or("");
+    path.split('/').skip(1).filter(|s| !s.is_empty()).map(|s| percent_decode_str(s)).collect()
+}
+
+/// Первый блок schema.org (`<script type="application/ld+json">`) нужного типа.
+fn json_ld(html: &str, typ: &str) -> Option<Value> {
+    let mut rest = html;
+    while let Some(i) = rest.find("application/ld+json") {
+        rest = &rest[i..];
+        let a = rest.find('>')? + 1;
+        let b = rest[a..].find("</script>")? + a;
+        if let Ok(v) = serde_json::from_str::<Value>(rest[a..b].trim()) {
+            if v["@type"].as_str() == Some(typ) {
+                return Some(v);
+            }
+        }
+        rest = &rest[b..];
+    }
+    None
+}
+
+/// «PT3M22S» → 202 с.
+fn iso_duration(d: &str) -> Option<f64> {
+    let t = d.strip_prefix("PT")?;
+    let (mut total, mut num) = (0.0, String::new());
+    for c in t.chars() {
+        match c {
+            '0'..='9' | '.' => num.push(c),
+            'H' | 'M' | 'S' => {
+                let n: f64 = num.parse().ok()?;
+                total += n * match c { 'H' => 3600.0, 'M' => 60.0, _ => 1.0 };
+                num.clear();
+            }
+            _ => return None,
+        }
+    }
+    Some(total)
+}
+
+/// Tidal: страница трека отдаёт исполнителя, название, альбом, длительность и ISRC (по нему YouTube Music
+/// находит ту же запись); альбом — по названию из каталога Deezer. Список треков плейлиста Tidal без входа не показывает.
+fn tidal(url: &str, log: &dyn Fn(String)) -> Result<MusicList, String> {
+    let segs = path_segs(url);
+    let kind_at = segs.iter().position(|s| matches!(s.to_ascii_lowercase().as_str(), "track" | "album" | "playlist" | "mix" | "video"))
+        .ok_or("Tidal: не понял ссылку — нужна ссылка на трек или альбом")?;
+    let kind = segs[kind_at].to_ascii_lowercase();
+    // tidal.com/album/midnights/255207222 — id последним; tidal.com/browse/track/123/u — первым числом после вида
+    let id = segs[kind_at + 1..].iter().find(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && s.chars().any(|c| c.is_ascii_digit()))
+        .cloned()
+        .ok_or("Tidal: в ссылке нет номера трека или альбома")?;
+    match kind.as_str() {
+        "track" => {
+            let page = fetch(&format!("https://tidal.com/browse/track/{id}"))?;
+            let ld = json_ld(&page, "MusicRecording").ok_or("Tidal не отдал сведения о треке (удалён или недоступен в регионе)")?;
+            let artist = ld["byArtist"].as_array().into_iter().flatten().map(|a| s(a, "name")).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ");
+            let t = Track {
+                artist,
+                title: s(&ld, "name"),
+                album: s(&ld["inAlbum"], "name"),
+                duration: ld["duration"].as_str().and_then(iso_duration),
+                isrc: ld["isrcCode"].as_str().filter(|x| !x.is_empty()).map(String::from),
+                cover: ld["image"].as_str().map(String::from),
+                source: None,
+                key: format!("tidal:{id}"),
+            };
+            if t.title.is_empty() {
+                return Err("Tidal не отдал название трека".into());
+            }
+            Ok(MusicList { name: t.display(), service: "Tidal".into(), tracks: vec![t], note: None, by_album: false, single: true })
+        }
+        "album" => {
+            let page = fetch(&format!("https://tidal.com/browse/album/{id}"))?;
+            let ld = json_ld(&page, "MusicAlbum").ok_or("Tidal не отдал сведения об альбоме")?;
+            let name = s(&ld, "name");
+            let artist = ld["byArtist"].as_array().and_then(|a| a.first()).map(|a| s(a, "name")).unwrap_or_default();
+            log(format!("Tidal: альбом «{name}» ({artist}) — список треков беру из каталога Deezer."));
+            let q = format!("{artist} {name}");
+            let found = get_json(&format!("https://api.deezer.com/search/album?q={}&limit=10", qenc(&q)), &[])?;
+            let list = found["data"].as_array().cloned().unwrap_or_default();
+            let pick = list.iter().find(|a| normalize(&s(a, "title")) == normalize(&name)).or(list.first())
+                .ok_or(format!("альбома «{name}» нет в каталоге Deezer — вставьте названия треков, по одному на строку"))?;
+            let a = get_json(&format!("https://api.deezer.com/album/{}", pick["id"].as_i64().unwrap_or(0)), &[])?;
+            let mut tracks = deezer_album_tracks(&a);
+            if tracks.is_empty() {
+                return Err(format!("Deezer не отдал треки альбома «{name}»"));
+            }
+            if let Some(c) = ld["image"].as_str() {
+                tracks.iter_mut().filter(|t| t.cover.is_none()).for_each(|t| t.cover = Some(c.to_string()));
+            }
+            Ok(MusicList { name, service: "Tidal".into(), tracks, note: None, by_album: false, single: false })
+        }
+        _ => Err("Tidal показывает треки плейлиста только после входа в аккаунт. Вставьте вместо ссылки названия треков \
+                  («исполнитель — название», по одному на строку) — программа найдёт их сама."
+            .into()),
+    }
+}
+
+/// Amazon Music, Qobuz, Звук, Beatport и другие: страницы открываются только в браузере (или за проверкой
+/// на бота), поэтому название берём у song.link — если задан его ключ. Иначе — подсказка вставить название.
+fn other_music(url: &str, service: &str, st: &Settings, log: &dyn Fn(String)) -> Result<MusicList, String> {
+    let hint = format!(
+        "{service}: по ссылке программа не может узнать название трека. Вставьте вместо ссылки «исполнитель — название» \
+         (можно несколько, по одной в строке) — программа найдёт трек сама{}.",
+        if cfg!(target_os = "android") { "" } else { ", или задайте ключ song.link в «настройки → музыка»" }
+    );
+    let key = st.odesli_key.trim();
+    if key.is_empty() {
+        return Err(hint);
+    }
+    let v = get_json(&format!("https://api.song.link/v1-alpha.1/links?url={}&userCountry=RU&key={}", qenc(url), qenc(key)), &[])
+        .map_err(|e| format!("{service}: song.link не ответил ({e}). {hint}"))?;
+    let uid = s(&v, "entityUniqueId");
+    let e = &v["entitiesByUniqueId"][uid.as_str()];
+    let title = s(e, "title");
+    if title.is_empty() {
+        return Err(hint);
+    }
+    log(format!("{service}: song.link узнал трек «{} — {title}».", s(e, "artistName")));
+    let t = Track { artist: s(e, "artistName"), title, cover: e["thumbnailUrl"].as_str().map(String::from), key: format!("songlink:{uid}"), ..Default::default() };
+    Ok(MusicList { name: t.display(), service: service.into(), tracks: vec![t], note: None, by_album: false, single: true })
+}
+
+/// Splice: сэмплы продаются по подписке и скачиваются только в приложении Splice. Программа показывает,
+/// что это за сэмпл (название, пак, темп, тональность), и не ищет его копии на других сайтах.
+fn splice(url: &str) -> String {
+    let segs = path_segs(url);
+    let pack = segs.iter().position(|s| s == "packs").and_then(|i| segs.get(i + 2)).map(|p| slug_words(p));
+    let sample = segs.iter().position(|s| s == "sample" || s == "samples").and_then(|i| segs.get(i + 2).or(segs.get(i + 1)))
+        .filter(|s| !s.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+        .map(|s| s.trim_end_matches(".wav").trim_end_matches(".mp3").to_string());
+    let page_title = fetch(url).ok().and_then(|h| meta_content(&h, "og:title")).map(|t| html_unescape(&t))
+        .filter(|t| !t.starts_with("Royalty-Free") && !t.is_empty())
+        .map(|t| t.trim_end_matches("| Splice").trim().to_string());
+    let name = page_title.or(sample.clone());
+    let mut parts = Vec::new();
+    if let Some(n) = &name {
+        parts.push(format!("сэмпл «{n}»"));
+    }
+    if let Some(p) = pack {
+        parts.push(format!("пак «{p}»"));
+    }
+    let src = name.unwrap_or_default();
+    if let Some(bpm) = src.split(['_', '-', ' ']).find_map(|w| {
+        let w = w.to_ascii_lowercase();
+        let n = w.trim_end_matches("bpm");
+        (n.len() >= 2 && n.len() <= 3 && n.chars().all(|c| c.is_ascii_digit())).then(|| n.parse::<u32>().ok()).flatten().filter(|n| (60..=200).contains(n))
+    }) {
+        parts.push(format!("{bpm} BPM"));
+    }
+    if let Some(k) = src.split(['_', '-', ' ']).find(|w| splice_key(w)) {
+        parts.push(format!("тональность {k}"));
+    }
+    let what = if parts.is_empty() { "это ссылка на Splice".to_string() } else { format!("Splice: {}", parts.join(", ")) };
+    format!(
+        "{what}. Сэмплы Splice продаются по подписке и скачиваются только в приложении Splice — откройте ссылку там. \
+         Искать копии платных сэмплов на других сайтах программа не будет."
+    )
+}
+
+fn slug_words(s: &str) -> String {
+    s.split(['-', '_']).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// «Cmin», «F#maj», «Am», «Bb» — похоже на тональность из имени сэмпла.
+fn splice_key(w: &str) -> bool {
+    let mut c = w.chars();
+    let Some(n) = c.next() else { return false };
+    if !matches!(n, 'A'..='G') {
+        return false;
+    }
+    let rest: String = c.collect();
+    let rest = rest.strip_prefix('#').or_else(|| rest.strip_prefix('b')).unwrap_or(&rest).to_ascii_lowercase();
+    matches!(rest.as_str(), "" | "m" | "min" | "maj" | "minor" | "major") && w.len() <= 7 && w.len() > 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1314,5 +1526,47 @@ mod search_live {
             let l = super::search_track(q, &|m| println!("{m}"));
             println!("  → {} | альбом {} | {:?}", l.tracks[0].display(), l.tracks[0].album, l.tracks[0].duration);
         }
+    }
+}
+
+#[cfg(test)]
+mod sites_tests {
+    use super::*;
+
+    #[test]
+    fn routes_and_parsing() {
+        for u in [
+            "https://tidal.com/browse/track/255207223",
+            "https://listen.tidal.com/album/255207222",
+            "https://music.mts.ru/track/123456",
+            "https://splice.com/sounds/packs/splice/kshmr-vol-1/samples",
+            "https://music.amazon.com/tracks/B00BWPRX50",
+            "https://www.qobuz.com/us-en/album/x/123",
+            "https://zvuk.com/track/3925452",
+        ] {
+            assert!(is_music_url(u), "{u}");
+        }
+        assert_eq!(iso_duration("PT3M22S"), Some(202.0));
+        assert_eq!(iso_duration("PT1H0M5S"), Some(3605.0));
+        assert!(splice_key("Cmin") && splice_key("F#maj") && splice_key("Am") && splice_key("Bb"));
+        assert!(!splice_key("Bass") && !splice_key("C") && !splice_key("Kick"));
+        let m = splice("https://splice.com/sounds/sample/0123abcd/KSHMR_Lead_Loop_128_Cmin");
+        assert!(m.contains("128 BPM") && m.contains("Cmin") && m.contains("приложении Splice"), "{m}");
+        let e = other_music("https://music.amazon.com/tracks/B00BWPRX50", "Amazon Music", &Settings::default(), &|_| {}).unwrap_err();
+        assert!(e.contains("исполнитель — название"), "{e}");
+    }
+
+    /// `cargo test -p vgd-core sites_live -- --ignored --nocapture` (нужна сеть)
+    #[test]
+    #[ignore]
+    fn sites_live() {
+        let log = |m: String| println!("{m}");
+        for u in ["https://tidal.com/browse/track/255207223", "https://tidal.com/album/midnights/255207222", "https://tidal.com/browse/playlist/36ea71a8-445e-41a4-82ab-6628c581535d"] {
+            match resolve(u, &Settings::default(), &log).unwrap() {
+                Ok(l) => println!("{u}\n  → {} · {} · треков {} · первый {:?} {:?} {:?}", l.name, l.service, l.tracks.len(), l.tracks[0].display(), l.tracks[0].isrc, l.tracks[0].duration),
+                Err(e) => println!("{u}\n  ✗ {e}"),
+            }
+        }
+        println!("{}", splice("https://splice.com/sounds/packs/splice/kshmr-vol-1/samples"));
     }
 }
