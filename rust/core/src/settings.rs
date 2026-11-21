@@ -107,6 +107,12 @@ pub struct Settings {
     pub yandex_acc: bool,
     /// ключ API song.link (Odesli): точные ссылки на тот же трек на других сервисах
     pub odesli_key: String,
+    /// YouTube Music от аккаунта (куки браузера): с Premium — AAC 256 kbps, поиск там раньше остальных
+    pub ytm_acc: bool,
+    /// SoundCloud от аккаунта (куки браузера): с Go+ — AAC 256 kbps и полные треки Go+
+    pub sc_acc: bool,
+    /// порядок источников звука (ключи accounts::SOURCES); пусто — по умолчанию. Вошедшие — всегда первыми
+    pub music_order: Vec<String>,
 }
 
 /// Что можно поменять пресетом или у отдельной ссылки (имена полей Settings).
@@ -220,6 +226,9 @@ impl Default for Settings {
             vk_search: false,
             yandex_acc: false,
             odesli_key: String::new(),
+            ytm_acc: false,
+            sc_acc: false,
+            music_order: Vec::new(),
             theme: String::new(),
         }
     }

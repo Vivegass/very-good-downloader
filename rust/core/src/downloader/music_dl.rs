@@ -66,8 +66,17 @@ fn site_of(url: &str) -> String {
 }
 
 /// Где искать замену, по порядку: YouTube Music (официальные аудио), SoundCloud, обычный YouTube.
-const SEARCH: [(&str, &str); 4] =
-    [("ytmusic", "YouTube Music"), ("soundcloud", "SoundCloud"), ("audius", "Audius"), ("youtube", "YouTube")];
+/// Название источника для «Ищу на …» / «взял с …».
+fn source_label(kind: &str) -> &'static str {
+    match kind {
+        "vk" => "VK",
+        "yandex" => "Яндекс Музыке",
+        "ytmusic" => "YouTube Music",
+        "soundcloud" => "SoundCloud",
+        "audius" => "Audius",
+        _ => "YouTube",
+    }
+}
 
 fn urlencode(s: &str) -> String {
     let mut out = String::new();
@@ -539,37 +548,45 @@ impl Downloader {
         if want.isrc.is_none() && !want.artist.is_empty() {
             self.p.message = format!("Уточняю трек: {}", want.display());
             self.emit();
-            want.isrc = match want.key.strip_prefix("deezer:") {
+            // Список со страницы Deezer (расширение) — без id трека: тогда ищем ISRC по названию.
+            want.isrc = match want.key.strip_prefix("deezer:").filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())) {
                 Some(id) => music::deezer_track_isrc(id), // трек из каталога Deezer — ISRC одним запросом
                 None => music::deezer_isrc(&want),
             };
         }
         let mut queries: Vec<(&str, &str, String)> = Vec::new();
         let base = format!("{} {}", want.artist.split(',').next().unwrap_or("").trim(), want.title).trim().to_string();
-        if let Some(isrc) = &want.isrc {
-            queries.push(("ytmusic", "YouTube Music", format!("\"{isrc}\"")));
-        }
         let artist1 = want.artist.split(',').next().unwrap_or("").trim().to_string();
-        // Порядок: VK и Яндекс от аккаунта пользователя (часто mp3 320 / flac и редкие треки), затем точные
-        // ссылки song.link на тот же трек, затем обычный поиск.
-        let mut first: Vec<(&str, &str, String)> = Vec::new();
-        // Без входа в VK поиск там не работает — сразу другие источники, как будто галочка выключена.
-        if self.s.vk_search && !t.key.starts_with("vk:") && crate::vk::logged_in() {
-            first.push(("vk", "VK", base.clone()));
-        }
-        if self.s.yandex_acc && !t.key.starts_with("yandex:") && crate::yandex_acc::logged_in() {
-            first.push(("yandex", "Яндекс Музыке", base.clone()));
-        }
-        for (label, url) in music::odesli(&want, &self.s.odesli_key) {
-            first.push(("direct", label, url));
-        }
-        queries.splice(0..0, first);
-        for (kind, label) in SEARCH {
-            queries.push((kind, label, base.clone()));
-            // Редкие треки находятся точнее, если исполнитель в кавычках.
-            if !artist1.is_empty() && kind != "soundcloud" && kind != "audius" {
-                queries.push((kind, label, format!("\"{artist1}\" {}", want.title)));
+        // Порядок: сначала сервисы, куда пользователь вошёл (VK, Яндекс, YouTube Music Premium, SoundCloud Go+ —
+        // лучшее качество и редкие треки), затем точные ссылки song.link на тот же трек, затем обычный поиск
+        // в порядке из настроек. VK и Яндекс без входа пропускаются.
+        let mut odesli = Some(music::odesli(&want, &self.s.odesli_key));
+        for kind in crate::accounts::source_order(&self.s) {
+            let label = source_label(kind);
+            if !crate::accounts::active(&self.s, kind) {
+                for (l, url) in odesli.take().unwrap_or_default() {
+                    queries.push(("direct", l, url));
+                }
             }
+            match kind {
+                // Трек и так с этого сервиса — его звук уже пробовали выше.
+                "vk" if t.key.starts_with("vk:") => {}
+                "yandex" if t.key.starts_with("yandex:") => {}
+                "vk" | "yandex" => queries.push((kind, label, base.clone())),
+                _ => {
+                    if let (Some(isrc), "ytmusic") = (&want.isrc, kind) {
+                        queries.push(("ytmusic", label, format!("\"{isrc}\"")));
+                    }
+                    queries.push((kind, label, base.clone()));
+                    // Редкие треки находятся точнее, если исполнитель в кавычках.
+                    if !artist1.is_empty() && kind != "soundcloud" && kind != "audius" {
+                        queries.push((kind, label, format!("\"{artist1}\" {}", want.title)));
+                    }
+                }
+            }
+        }
+        for (l, url) in odesli.take().unwrap_or_default() {
+            queries.push(("direct", l, url));
         }
         // Для проверки отдельного источника: VGD_ONLY_SOURCE=audius (или ytmusic, soundcloud, youtube).
         if let Ok(only) = std::env::var("VGD_ONLY_SOURCE") {
@@ -759,14 +776,53 @@ impl Downloader {
         super::parse_json(&r.stdout)
     }
 
-    /// Сведения о треке (`yt-dlp -j`), только звук.
+    /// Сведения о треке (`yt-dlp -j`), только звук. Есть вход в YouTube / SoundCloud (и он включён) —
+    /// сначала с куками аккаунта: Premium / Go+ дают AAC 256. Не вышло — как обычно, без входа.
     fn music_info(&mut self, url: &str) -> R<Value> {
+        if let Some((key, file)) = crate::accounts::for_url(&self.s, url) {
+            let args = vec![
+                "-j".to_string(),
+                "--no-playlist".to_string(),
+                "-f".to_string(),
+                account_format(key).to_string(),
+                "--cookies".to_string(),
+                file.to_string_lossy().into_owned(),
+                "--".to_string(),
+                url.to_string(),
+            ];
+            let err = match self.ytdlp(&args, |_, _| {}) {
+                Ok(r) if r.ok => match super::parse_json(&r.stdout) {
+                    Ok(mut v) => {
+                        v["_vgd_account"] = json!(key);
+                        return Ok(v);
+                    }
+                    Err(DlError::Failed(m)) => m,
+                    Err(c) => return Err(c),
+                },
+                Ok(r) => r.errors.last().cloned().unwrap_or_else(|| "yt-dlp завершился с ошибкой".into()),
+                Err(DlError::Failed(m)) if is_network_error(&m) => return fail(m),
+                Err(DlError::Failed(m)) => m,
+                Err(c) => return Err(c),
+            };
+            self.log(format!("С вашим аккаунтом не открылось ({}) — пробую без входа.", first_line(&err)));
+        }
         let args = vec!["-j".to_string(), "--no-playlist".to_string(), "-f".to_string(), "bestaudio/best".to_string()];
         self.json_with_login_retry(&args, url)
     }
 
     /// Скачать звук по сведениям, вписав правильные теги и обложку.
     fn music_download(&mut self, mut info: Value, t: &Track, num: usize, dir: &Path, prefix: Option<&str>) -> R<PathBuf> {
+        // Сведения взяты от аккаунта пользователя — и качаем с его куками (и тем же выбором формата).
+        let account = info
+            .as_object_mut()
+            .and_then(|o| o.remove("_vgd_account"))
+            .and_then(|v| v.as_str().map(String::from))
+            .and_then(|k| crate::accounts::cookies_file(&k).map(|f| (k, f)));
+        if let Some((key, _)) = &account {
+            if let Some(q) = account_quality(key, &info) {
+                self.log(format!("«{}»: {q}", t.display()));
+            }
+        }
         // Имя файла: «01 - Исполнитель - Название» (в плейлисте) или «Исполнитель - Название».
         let name = track_stem(t, prefix);
         if !t.title.is_empty() {
@@ -809,7 +865,7 @@ impl Downloader {
             .map_err(|e| DlError::Failed(format!("временный файл: {e}")))?;
         let mut args: Vec<String> = vec![
             "--load-info-json".into(), json_path.to_string_lossy().into_owned(),
-            "-f".into(), "bestaudio/best".into(), "-x".into(),
+            "-f".into(), account.as_ref().map(|(k, _)| account_format(k)).unwrap_or("bestaudio/best").into(), "-x".into(),
             "-P".into(), format!("home:{}", dir.display()),
             "-P".into(), format!("temp:{}", parts.display()),
             "-o".into(), format!("{}.%(ext)s", name.replace('%', "%%")),
@@ -830,7 +886,9 @@ impl Downloader {
             "flac" => args.extend(["--audio-format", "flac"].map(String::from)),
             _ => {} // как есть: лучший звук без перекодирования (opus / m4a)
         }
-        if self.use_cookies {
+        if let Some((_, f)) = &account {
+            args.extend(["--cookies".to_string(), f.to_string_lossy().into_owned()]);
+        } else if self.use_cookies {
             args.extend(self.cookie_args());
         }
         self.p.stage = "audio".into();
@@ -862,6 +920,23 @@ impl Downloader {
             }
             _ => fail(r.errors.last().cloned().unwrap_or_else(|| "файл не появился".into())),
         }
+    }
+}
+
+/// Выбор формата с аккаунтом: у YouTube Music Premium — AAC 256 kbps (141), иначе лучший звук.
+fn account_format(key: &str) -> &'static str {
+    if key == "youtube" { "141/bestaudio/best" } else { "bestaudio/best" }
+}
+
+/// Что дал аккаунт (для журнала): «YouTube Music Premium: AAC 256 kbps».
+fn account_quality(key: &str, info: &Value) -> Option<String> {
+    let id = str_of(info, &["format_id"]);
+    let abr = info.get("abr").and_then(Value::as_f64).unwrap_or(0.0);
+    match key {
+        "youtube" if id == "141" => Some("YouTube Music Premium — AAC 256 kbps".into()),
+        "soundcloud" if id == "download" => Some("SoundCloud — оригинальный файл автора".into()),
+        "soundcloud" if abr >= 250.0 => Some("SoundCloud Go+ — AAC 256 kbps".into()),
+        _ => None,
     }
 }
 

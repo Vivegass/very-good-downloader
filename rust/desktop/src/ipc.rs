@@ -304,6 +304,28 @@ fn handle(mut conn: TcpStream, on_urls: &dyn Fn(Incoming)) -> Option<()> {
             }
             respond_to(&mut conn, cors, "200 OK", "{\"ok\":true}");
         }
+        // Вход в YouTube / SoundCloud: расширение присылает куки вошедшего браузера (только если в программе
+        // включено «брать звук от аккаунта»). Только от расширения — не от второго запуска и не от Spotify.
+        // Сначала расширение спрашивает, нужен ли вход (GET /cookies?service=…): если нет — куки не присылает.
+        ("GET", "/cookies") if allowed(&req) && req.header("origin").is_some_and(|o| o != SPOTIFY_ORIGIN) => {
+            let service = req.path.split_once("service=").map(|(_, v)| v.split('&').next().unwrap_or("")).unwrap_or("");
+            let wanted = crate::accounts::wanted(&crate::settings::Settings::load(), service);
+            respond_to(&mut conn, cors, "200 OK", if wanted { "{\"ok\":true,\"state\":\"wanted\"}" } else { "{\"ok\":true,\"state\":\"unwanted\"}" });
+        }
+        ("POST", "/cookies") if allowed(&req) && req.header("origin").is_some_and(|o| o != SPOTIFY_ORIGIN) => {
+            let v: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+            let service = v.get("service").and_then(|s| s.as_str()).unwrap_or("");
+            let s = crate::settings::Settings::load();
+            let body = if !crate::accounts::wanted(&s, service) {
+                serde_json::json!({ "ok": true, "state": "unwanted" })
+            } else {
+                match crate::accounts::save_json(service, v.get("cookies").unwrap_or(&serde_json::Value::Null)) {
+                    Ok((n, logged)) => serde_json::json!({ "ok": true, "state": "saved", "count": n, "logged": logged }),
+                    Err(e) => serde_json::json!({ "ok": false, "state": "error", "error": e }),
+                }
+            };
+            respond_to(&mut conn, cors, "200 OK", &body.to_string());
+        }
         ("POST", "/add") if allowed(&req) => {
             let v: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
             let mut urls: Vec<String> = Vec::new();

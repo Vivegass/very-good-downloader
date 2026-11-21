@@ -1,6 +1,7 @@
 //! Very Good Downloader: ядро, общее для версии для Windows (`desktop`) и Android (`android`).
 //! Окна, трея, реестра (кроме системного прокси) и WebView здесь нет.
 
+pub mod accounts;
 pub mod appinfo;
 pub mod downloader;
 pub mod fingerprint;

@@ -717,6 +717,25 @@ pub fn yandex_logout() {
     vgd_core::yandex_acc::logout()
 }
 
+// ---------- аккаунты с куками (YouTube / YouTube Music, SoundCloud) ----------
+
+/// Есть ли вход: в файле кук сервиса («youtube», «soundcloud») есть кука входа.
+#[uniffi::export]
+pub fn account_logged_in(key: String) -> bool {
+    vgd_core::accounts::logged_in(&key)
+}
+
+#[uniffi::export]
+pub fn account_logout(key: String) {
+    vgd_core::accounts::logout(&key)
+}
+
+/// Куки из окна входа (формат Netscape) → файл сервиса. true — вход есть.
+#[uniffi::export]
+pub fn account_save_netscape(key: String, text: String) -> Result<bool, VgdError> {
+    vgd_core::accounts::save_netscape(&key, &text).map(|(_, logged)| logged).map_err(fail)
+}
+
 // ---------- yt-dlp ----------
 
 #[uniffi::export]

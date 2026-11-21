@@ -430,6 +430,8 @@ struct App {
     preset_new: String,
     /// вход в Яндекс идёт: код и страница для ввода
     ya_code: Option<(String, String)>,
+    /// «войти через браузер» нажато: какой сервис и когда (ждём куки от расширения)
+    acc_wait: Option<(&'static str, f64)>,
     log: Vec<String>,
     /// журнал: строка поиска и «поставить в неё курсор» (Ctrl+F)
     log_find: String,
@@ -581,6 +583,7 @@ impl App {
             edit_job: None,
             preset_new: String::new(),
             ya_code: None,
+            acc_wait: None,
             log: Vec::new(),
             log_find: String::new(),
             log_find_focus: false,
@@ -1595,6 +1598,187 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
         }
     }
 
+    /// Аккаунты: куда вошёл пользователь — оттуда звук берётся первым и в лучшем качестве.
+    fn ui_accounts(&mut self, ui: &mut egui::Ui) {
+        let now = ui.input(|i| i.time);
+        // Ждём куки от расширения: файл проверяется раз в секунду (до 3 минут).
+        let waiting = match self.acc_wait {
+            Some((key, at)) if !vgd::accounts::logged_in(key) && now - at < 180.0 => {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+                Some(key)
+            }
+            Some(_) => {
+                self.acc_wait = None;
+                None
+            }
+            None => None,
+        };
+        let ext = ipc::extension_version().is_some() || !self.s.ext_version.is_empty();
+        hint(ui, "войдите туда, где у вас подписка: звук будет браться оттуда первым и в лучшем качестве (если формат музыки — «как есть», без перекодирования). пароли программа не видит — вход на страницах самих сервисов.");
+        ui.add_space(6.0);
+        card(ui, |ui| {
+                row(ui, "vk", "звук прямо из vk и поиск замены там — от вашего аккаунта, как в самом vk: часто mp3 320 и редкие треки. программа открывает vk.com в невидимом окне (движок edge webview2); войти нужно один раз кнопкой «войти в vk» — пароль вводится на странице vk, программа его не видит. найденное сверяется по звуку, как и с других сайтов. тумблер — брать ли звук из vk.", |ui| {
+                    let logged = vgd::vk_web::logged_in();
+                    toggle(ui, &mut self.s.vk_search);
+                    if small_pill(ui, if logged { "войти заново" } else { "войти в vk" }).clicked() {
+                        if let Err(e) = vgd::vk_web::open_login() {
+                            self.status = format!("vk: {e}");
+                        }
+                    }
+                    ui.label(RichText::new(if logged { "вход выполнен" } else { "нет входа" }).size(11.5).color(if logged { pal().ok } else { pal().muted }));
+                });
+                divider(ui);
+                row(ui, "яндекс музыка", "вход кодом: программа покажет код и откроет страницу яндекса — подтвердите вход там (пароль программа не видит). с подпиской плюс треки яндекса качаются прямо с яндекса (flac, если есть — бывает и hi-res 24 бит, иначе mp3 320 / aac), а для spotify, apple и других яндекс ищется среди первых. без подписки яндекс отдаёт только отрывки — тогда трек ищется на других сайтах. зашифрованные файлы яндекса программа не берёт.", |ui| {
+                    let logged = vgd::yandex_acc::logged_in();
+                    toggle(ui, &mut self.s.yandex_acc);
+                    if logged {
+                        if small_pill(ui, "выйти").clicked() {
+                            vgd::yandex_acc::logout();
+                        }
+                    } else if small_pill_enabled(ui, "войти в яндекс", !self.side_task).clicked() && !self.side_task {
+                        self.side_task = true;
+                        let (tx, ctx) = (self.tx.clone(), ui.ctx().clone());
+                        std::thread::spawn(move || {
+                            let stx = tx.clone();
+                            let sctx = ctx.clone();
+                            let r = vgd::yandex_acc::login(&|code, url| {
+                                let _ = stx.send(Event::YandexCode(Some((code.to_string(), url.to_string()))));
+                                let _ = stx.send(Event::Log(format!("Вход в Яндекс Музыку: код {code} — {url}")));
+                                vgd::appinfo::open_url(url);
+                                sctx.request_repaint();
+                            });
+                            let _ = tx.send(Event::YandexCode(None));
+                            let _ = tx.send(Event::Status(match r {
+                                Ok(()) => "яндекс музыка: вход выполнен".into(),
+                                Err(e) => format!("яндекс музыка: {e}"),
+                            }));
+                            ctx.request_repaint();
+                        });
+                    }
+                    ui.label(RichText::new(if logged { "вход выполнен" } else { "нет входа" }).size(11.5).color(if logged { pal().ok } else { pal().muted }));
+                });
+                // Идёт вход: код крупно — его вводят на странице Яндекса.
+                if let Some((code, url)) = self.ya_code.clone() {
+                    egui::Frame::new().fill(pal().surface_hi).corner_radius(rad(10)).inner_margin(Margin::symmetric(12, 10)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new("введите этот код на странице яндекса — латиницей (английская раскладка):").size(12.0).color(pal().muted));
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&code).size(26.0).color(pal().text).strong());
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if small_pill(ui, "открыть страницу").clicked() {
+                                    vgd::appinfo::open_url(&url);
+                                }
+                                if small_pill(ui, "копировать").clicked() {
+                                    if let Ok(mut c) = arboard::Clipboard::new() {
+                                        let _ = c.set_text(code.clone());
+                                    }
+                                }
+                            });
+                        });
+                        ui.label(RichText::new("после подтверждения программа заметит вход сама.").size(11.0).color(pal().faint));
+                    });
+                }
+            for (key, label, url) in [
+                ("youtube", "youtube и youtube music", "https://music.youtube.com/#vgd-login"),
+                ("soundcloud", "soundcloud", "https://soundcloud.com/#vgd-login"),
+            ] {
+                divider(ui);
+                let tip = format!(
+                    "{}. куки входа передаёт расширение браузера — только в эту программу на этом компьютере. войдите на сайте в браузере и нажмите «войти через браузер»: откроется сайт, расширение скажет, что вход передан. выйти — кнопкой «выйти» (куки удаляются).",
+                    acc_gives(key)
+                );
+                row(ui, label, &tip, |ui| {
+                    let logged = vgd::accounts::logged_in(key);
+                    let on = if key == "youtube" { &mut self.s.ytm_acc } else { &mut self.s.sc_acc };
+                    let mut start = toggle(ui, on) && *on && !logged;
+                    if logged {
+                        if small_pill(ui, "выйти").clicked() {
+                            vgd::accounts::logout(key);
+                            *on = false;
+                        }
+                    } else if small_pill(ui, "войти через браузер").clicked() {
+                        *on = true;
+                        start = true;
+                    }
+                    if start {
+                        vgd::appinfo::open_url(url);
+                        self.acc_wait = Some((key, now));
+                    }
+                    let (t, c) = if logged {
+                        ("вход выполнен", pal().ok)
+                    } else if waiting == Some(key) {
+                        ("жду браузер…", pal().warn)
+                    } else if !ext {
+                        ("нужно расширение", pal().warn)
+                    } else {
+                        ("нет входа", pal().muted)
+                    };
+                    ui.label(RichText::new(t).size(11.5).color(c));
+                });
+            }
+        });
+        ui.add_space(10.0);
+        hint(ui, "только списки треков: звук этих сервисов защищён (drm, шифрование) — программа его не качает и с подпиской, а находит тот же трек в сервисах выше. войдите на сайте в браузере, откройте плейлист или избранное и нажмите кнопку ↓ расширения — весь список уйдёт в программу.");
+        ui.add_space(6.0);
+        card(ui, |ui| {
+            for (i, a) in vgd::accounts::ACCOUNTS.iter().filter(|a| !a.audio).enumerate() {
+                if i > 0 {
+                    divider(ui);
+                }
+                row(ui, &a.name.to_lowercase(), a.gives, |ui| {
+                    if small_pill(ui, "открыть").on_hover_text("открыть сайт в браузере").clicked() {
+                        vgd::appinfo::open_url(list_site(a.key));
+                    }
+                    ui.label(RichText::new(if ext { "через браузер" } else { "нужно расширение" }).size(11.5).color(if ext { pal().muted } else { pal().warn }));
+                });
+            }
+        });
+        ui.add_space(10.0);
+        hint(ui, "откуда брать звук, если трека нет на самом сервисе или его звук защищён. сервисы, куда вы вошли, всегда идут первыми; vk и яндекс без входа пропускаются.");
+        ui.add_space(6.0);
+        card(ui, |ui| {
+            let order = vgd::accounts::user_order(&self.s);
+            let mut swap = None;
+            for (i, k) in order.iter().enumerate() {
+                if i > 0 {
+                    divider(ui);
+                }
+                let name = vgd::accounts::SOURCES.iter().find(|(x, _)| x == k).map(|(_, n)| *n).unwrap_or(k);
+                let active = vgd::accounts::active(&self.s, k);
+                row(ui, &name.to_lowercase(), "", |ui| {
+                    // Нет стрелки (первая / последняя строка) — пустое место той же ширины, чтобы стрелки стояли столбиком.
+                    if i + 1 < order.len() {
+                        if icon_button(ui, I_DOWN, "ниже").clicked() {
+                            swap = Some(i);
+                        }
+                    } else {
+                        ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
+                    }
+                    if i > 0 {
+                        if icon_button(ui, I_UP, "выше").clicked() {
+                            swap = Some(i - 1);
+                        }
+                    } else {
+                        ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
+                    }
+                    let (t, c) = if active {
+                        ("ваш аккаунт — первым", pal().ok)
+                    } else if matches!(*k, "vk" | "yandex") {
+                        ("без входа пропускается", pal().faint)
+                    } else {
+                        ("", pal().muted)
+                    };
+                    ui.label(RichText::new(t).size(11.5).color(c));
+                });
+            }
+            if let Some(i) = swap {
+                let mut o: Vec<String> = order.iter().map(|k| k.to_string()).collect();
+                o.swap(i, i + 1);
+                self.s.music_order = o;
+            }
+        });
+    }
+
     /// Строка поиска по настройкам.
     fn ui_settings_search(&mut self, ui: &mut egui::Ui) {
         let id = egui::Id::unique("settings-search");
@@ -1742,6 +1926,10 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                 });
                 }
 
+                if self.group(ui, "аккаунты") {
+                    self.ui_accounts(ui);
+                }
+
                 if self.group(ui, "музыка") {
                 card(ui, |ui| {
                     row(ui, "формат", "«как есть» — лучший звук сервиса без перекодирования (opus или m4a). mp3 320 и m4a — для старых плееров и машин. flac не добавит качества к сжатому источнику, но нужен некоторым программам. hi-res (24 бит) сервисы бесплатно не отдают.", |ui| {
@@ -1779,73 +1967,9 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                         toggle(ui, &mut self.s.music_verify);
                     });
                     divider(ui);
-                    row(ui, "искать в vk (ваш аккаунт)", "замена треку ищется сначала в vk — от вашего аккаунта, как в самом vk: часто mp3 320 и редкие треки. программа открывает vk.com в невидимом окне (движок edge webview2); войти нужно один раз кнопкой «войти в vk» — пароль вводится на странице vk, программа его не видит. найденное сверяется по звуку, как и с других сайтов.", |ui| {
-                        let logged = vgd::vk_web::logged_in();
-                        toggle(ui, &mut self.s.vk_search);
-                        if small_pill(ui, if logged { "войти заново" } else { "войти в vk" }).clicked() {
-                            if let Err(e) = vgd::vk_web::open_login() {
-                                self.status = format!("vk: {e}");
-                            }
-                        }
-                        ui.label(RichText::new(if logged { "вход выполнен" } else { "нет входа" }).size(11.5).color(if logged { pal().ok } else { pal().muted }));
-                    });
-                    divider(ui);
-                    row(ui, "яндекс музыка (ваш аккаунт)", "вход кодом: программа покажет код и откроет страницу яндекса — подтвердите вход там (пароль программа не видит). с подпиской плюс треки яндекса качаются прямо с яндекса (flac, если есть, иначе mp3 320 / aac), а для spotify, apple и других яндекс ищется сразу после vk. без подписки яндекс отдаёт только отрывки — тогда трек ищется на других сайтах. зашифрованные файлы яндекса программа не берёт.", |ui| {
-                        let logged = vgd::yandex_acc::logged_in();
-                        toggle(ui, &mut self.s.yandex_acc);
-                        if logged {
-                            if small_pill(ui, "выйти").clicked() {
-                                vgd::yandex_acc::logout();
-                            }
-                        } else if small_pill_enabled(ui, "войти в яндекс", !self.side_task).clicked() && !self.side_task {
-                            self.side_task = true;
-                            let (tx, ctx) = (self.tx.clone(), ui.ctx().clone());
-                            std::thread::spawn(move || {
-                                let stx = tx.clone();
-                                let sctx = ctx.clone();
-                                let r = vgd::yandex_acc::login(&|code, url| {
-                                    let _ = stx.send(Event::YandexCode(Some((code.to_string(), url.to_string()))));
-                                    let _ = stx.send(Event::Log(format!("Вход в Яндекс Музыку: код {code} — {url}")));
-                                    vgd::appinfo::open_url(url);
-                                    sctx.request_repaint();
-                                });
-                                let _ = tx.send(Event::YandexCode(None));
-                                let _ = tx.send(Event::Status(match r {
-                                    Ok(()) => "яндекс музыка: вход выполнен".into(),
-                                    Err(e) => format!("яндекс музыка: {e}"),
-                                }));
-                                ctx.request_repaint();
-                            });
-                        }
-                        ui.label(RichText::new(if logged { "вход выполнен" } else { "нет входа" }).size(11.5).color(if logged { pal().ok } else { pal().muted }));
-                    });
-                    // Идёт вход: код крупно — его вводят на странице Яндекса.
-                    if let Some((code, url)) = self.ya_code.clone() {
-                        egui::Frame::new().fill(pal().surface_hi).corner_radius(rad(10)).inner_margin(Margin::symmetric(12, 10)).show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(RichText::new("введите этот код на странице яндекса — латиницей (английская раскладка):").size(12.0).color(pal().muted));
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&code).size(26.0).color(pal().text).strong());
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if small_pill(ui, "открыть страницу").clicked() {
-                                        vgd::appinfo::open_url(&url);
-                                    }
-                                    if small_pill(ui, "копировать").clicked() {
-                                        if let Ok(mut c) = arboard::Clipboard::new() {
-                                            let _ = c.set_text(code.clone());
-                                        }
-                                    }
-                                });
-                            });
-                            ui.label(RichText::new("после подтверждения программа заметит вход сама.").size(11.0).color(pal().faint));
-                        });
-                    }
-                    divider(ui);
                     row(ui, "ключ song.link (необязательно)", "song.link (odesli) по треку spotify, apple, яндекса или deezer даёт точные ссылки на тот же трек на youtube music, soundcloud и youtube — без поиска по названию. с осени 2026 их api работает только с ключом (запрос — на odesli.co). без ключа программа просто ищет как обычно.", |ui| {
                         ui.add(egui::TextEdit::singleline(&mut self.s.odesli_key).password(true).hint_text("ключ").desired_width(180.0));
                     });
-                    divider(ui);
-                    row(ui, "spotify и vk из браузера", "spotify отдаёт программе только 100 треков, а vk — ничего без входа. откройте плейлист в браузере и нажмите кнопку расширения «скачать плейлист» — весь список уйдёт в программу. звук vk берётся прямо из vk; звук spotify — с youtube music, soundcloud или youtube. так же заменяются заблокированные треки.", |_ui| {});
                 });
                 }
 
@@ -2693,6 +2817,23 @@ fn centered(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
             add(ui);
         });
     });
+}
+
+/// Что даёт вход в сервис (из ядра — одно описание для ПК и телефона).
+fn acc_gives(key: &str) -> &'static str {
+    vgd::accounts::ACCOUNTS.iter().find(|a| a.key == key).map(|a| a.gives).unwrap_or("")
+}
+
+/// Страница сервиса, где после входа видны свои плейлисты и избранное.
+fn list_site(key: &str) -> &'static str {
+    match key {
+        "spotify" => "https://open.spotify.com/collection/tracks",
+        "deezer" => "https://www.deezer.com/",
+        "tidal" => "https://listen.tidal.com/",
+        "qobuz" => "https://play.qobuz.com/",
+        "zvuk" => "https://zvuk.com/",
+        _ => "https://splice.com/sounds",
+    }
 }
 
 fn hint(ui: &mut egui::Ui, text: &str) {

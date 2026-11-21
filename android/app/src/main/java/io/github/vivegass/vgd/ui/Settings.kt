@@ -35,6 +35,10 @@ import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.ColorLens
 import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.rounded.Description
@@ -102,6 +106,9 @@ import io.github.vivegass.vgd.core.sortPlan
 import io.github.vivegass.vgd.core.themeList
 import io.github.vivegass.vgd.core.topics
 import io.github.vivegass.vgd.core.updateYtdlp
+import io.github.vivegass.vgd.core.accountLoggedIn
+import io.github.vivegass.vgd.core.accountLogout
+import io.github.vivegass.vgd.core.accountSaveNetscape
 import io.github.vivegass.vgd.core.yandexLoggedIn
 import io.github.vivegass.vgd.core.yandexLogout
 import io.github.vivegass.vgd.core.yandexPoll
@@ -123,6 +130,9 @@ data class SettingsEnv(
     val yaLogged: Boolean = false,
     val yaCode: String? = null,
     val hasCookies: Boolean = false,
+    /** вход в YouTube / SoundCloud для музыки (accounts/<сервис>.txt в ядре) */
+    val ytLogged: Boolean = false,
+    val scLogged: Boolean = false,
     val battery: Boolean = false,
     /** темы с ПК: ключ, название, цвет акцента */
     val themes: List<Triple<String, String, Color>> = emptyList(),
@@ -139,6 +149,8 @@ interface SettingsHandler {
     fun vkLogin() {}
     fun yandex() {}
     fun youtubeLogin() {}
+    fun soundcloud() {}
+    fun openSite(url: String) {}
     fun pickCookies() {}
     fun clearCookies() {}
     fun battery() {}
@@ -153,6 +165,30 @@ interface SettingsHandler {
 private val HEIGHTS = listOf(0 to "Максимальное", 2160 to "2160p (4K)", 1440 to "1440p", 1080 to "1080p", 720 to "720p", 480 to "480p")
 private val MUSIC = listOf("best" to "Как есть", "mp3" to "MP3 320", "m4a" to "M4A", "flac" to "FLAC")
 
+/** Источники звука (как accounts::SOURCES в ядре): ключ и название. */
+private val SOURCES = listOf("vk" to "VK", "yandex" to "Яндекс Музыка", "ytmusic" to "YouTube Music", "soundcloud" to "SoundCloud", "audius" to "Audius", "youtube" to "YouTube")
+
+/** Сервисы, у которых программа берёт только список треков (звук защищён): название, что даёт, сайт. */
+private val LIST_ONLY = listOf(
+    Triple("Spotify", "Плейлисты и «Любимые треки» — ссылкой «Поделиться»", "https://open.spotify.com/"),
+    Triple("Deezer", "Плейлисты и альбомы — ссылкой «Поделиться»", "https://www.deezer.com/"),
+    Triple("Tidal", "Треки и альбомы — ссылкой «Поделиться»", "https://tidal.com/"),
+    Triple("Qobuz", "Ссылкой (нужен ключ song.link) или «исполнитель — название»", "https://www.qobuz.com/"),
+    Triple("Звук", "Ссылкой (нужен ключ song.link) или «исполнитель — название»", "https://zvuk.com/"),
+    Triple("Splice", "Название, BPM и тональность сэмпла; сами сэмплы — только в приложении Splice", "https://splice.com/sounds"),
+)
+
+/** Порядок источников из настроек: неизвестное отброшено, недостающее — в конце. */
+private fun sourceOrder(o: JSONObject?): List<String> {
+    val arr = o?.optJSONArray("music_order")
+    val out = mutableListOf<String>()
+    for (i in 0 until (arr?.length() ?: 0)) {
+        val k = arr!!.optString(i)
+        if (SOURCES.any { it.first == k } && k !in out) out += k
+    }
+    SOURCES.forEach { if (it.first !in out) out += it.first }
+    return out
+}
 /** Путь короче: /storage/emulated/0/Download/X → Download/X. */
 private fun shortPath(p: String) = p.removePrefix(Environment.getExternalStorageDirectory().absolutePath).trimStart('/').ifEmpty { p }
 
@@ -270,7 +306,7 @@ fun SettingsContent(
                 }
             }
             item(key = "acc") {
-                Group("Аккаунты", footer = "Пароли программа не видит: вход — на страницах самих сервисов.") {
+                Group("Аккаунты", footer = "Где вы вошли — оттуда звук берётся первым и в лучшем качестве (при формате «Как есть»). Пароли программа не видит: вход — на страницах самих сервисов.") {
                     nav("VK", value = if (env.vkLogged) "Вход выполнен" else "Войти", icon = Icons.Rounded.People, tint = Tint.BLUE) { h.vkLogin() }
                     toggle(
                         "Искать музыку в VK первым",
@@ -292,7 +328,68 @@ fun SettingsContent(
                     if (env.yaLogged) {
                         toggle("Звук прямо с Яндекса", o.optBoolean("yandex_acc"), "FLAC и поиск замены там") { v -> save { it.put("yandex_acc", v) } }
                     }
-                    nav("YouTube", value = if (env.hasCookies) "Куки есть" else "Без входа", subtitle = "Для 18+ и закрытых видео", icon = Icons.Rounded.SmartDisplay, tint = Tint.RED) { sheet = "youtube" }
+                    nav(
+                        "YouTube и YouTube Music",
+                        value = if (env.ytLogged) "Вход выполнен" else if (env.hasCookies) "Куки есть" else "Без входа",
+                        subtitle = "Premium — AAC 256 в музыке; 18+ и закрытые видео",
+                        icon = Icons.Rounded.SmartDisplay,
+                        tint = Tint.RED,
+                    ) { sheet = "youtube" }
+                    if (env.ytLogged) {
+                        toggle("Музыка от аккаунта YouTube", o.optBoolean("ytm_acc"), "С Premium — AAC 256 kbps, поиск там первым") { v -> save { it.put("ytm_acc", v) } }
+                    }
+                    nav(
+                        "SoundCloud",
+                        value = if (env.scLogged) "Выйти" else "Войти",
+                        subtitle = "Go+ — AAC 256 и полные треки Go+",
+                        icon = Icons.Rounded.Cloud,
+                        tint = Tint.ORANGE,
+                    ) { h.soundcloud() }
+                    if (env.scLogged) {
+                        toggle("Музыка от аккаунта SoundCloud", o.optBoolean("sc_acc"), "Поиск там первым") { v -> save { it.put("sc_acc", v) } }
+                    }
+                }
+            }
+            item(key = "acc-lists") {
+                Group(
+                    "Только списки треков",
+                    footer = "Звук этих сервисов защищён (DRM, шифрование) — программа его не качает и с подпиской, а находит тот же трек в сервисах выше. Поделитесь плейлистом или треком из их приложения — названия возьмутся сами.",
+                ) {
+                    LIST_ONLY.forEach { (name, gives, url) ->
+                        nav(name, subtitle = gives, icon = Icons.Rounded.QueueMusic, tint = Tint.GRAY) { h.openSite(url) }
+                    }
+                }
+            }
+            item(key = "acc-order") {
+                val order = sourceOrder(o)
+                val active = mapOf(
+                    "vk" to (o.optBoolean("vk_search") && env.vkLogged),
+                    "yandex" to (o.optBoolean("yandex_acc") && env.yaLogged),
+                    "ytmusic" to (o.optBoolean("ytm_acc") && env.ytLogged),
+                    "soundcloud" to (o.optBoolean("sc_acc") && env.scLogged),
+                )
+                fun move(i: Int, j: Int) {
+                    val m = order.toMutableList()
+                    java.util.Collections.swap(m, i, j)
+                    save { it.put("music_order", org.json.JSONArray(m)) }
+                }
+                Group("Откуда брать звук", footer = "Когда трека нет на самом сервисе или его звук защищён. Сервисы, куда вы вошли, — всегда первыми; VK и Яндекс без входа пропускаются.") {
+                    order.forEachIndexed { i, k ->
+                        val name = SOURCES.first { it.first == k }.second
+                        val status = when {
+                            active[k] == true -> "Ваш аккаунт — первым"
+                            k == "vk" || k == "yandex" -> "Без входа пропускается"
+                            else -> null
+                        }
+                        item(listOfNotNull(name, status, "порядок источник").joinToString(" ")) { d ->
+                            KitRow(name, status, null, Tint.GRAY, null, d) {
+                                Row {
+                                    IconButton(onClick = { move(i, i - 1) }, enabled = i > 0) { Icon(Icons.Rounded.KeyboardArrowUp, "Выше") }
+                                    IconButton(onClick = { move(i, i + 1) }, enabled = i < order.lastIndex) { Icon(Icons.Rounded.KeyboardArrowDown, "Ниже") }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             item(key = "folder") {
@@ -452,6 +549,8 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
                     updBeta = up?.beta ?: false,
                     ytdlp = ytdlpVersion() ?: "не найден",
                     yaLogged = runCatching { yandexLoggedIn() }.getOrDefault(false),
+                    ytLogged = runCatching { accountLoggedIn("youtube") }.getOrDefault(false),
+                    scLogged = runCatching { accountLoggedIn("soundcloud") }.getOrDefault(false),
                     themes = themes,
                     version = "Very Good Downloader для Android ${BuildConfig.VERSION_NAME} · ядро ${io.github.vivegass.vgd.core.version()}\n${ctx.packageName}",
                 )
@@ -486,18 +585,30 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
         saveNow { it.put("out_dir", p) }
     }
     val vkLogin = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { env = env.copy(vkLogged = VkAgent.loggedIn()) }
+    fun accounts() = env.copy(
+        hasCookies = cookies.isFile,
+        ytLogged = runCatching { accountLoggedIn("youtube") }.getOrDefault(false),
+        scLogged = runCatching { accountLoggedIn("soundcloud") }.getOrDefault(false),
+    )
     val ytLogin = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        env = env.copy(hasCookies = cookies.isFile)
+        env = accounts()
         if (cookies.isFile) useCookies()
+        // Вошли — музыка YouTube Music сразу от аккаунта (Premium — AAC 256).
+        if (env.ytLogged) saveNow { it.put("ytm_acc", true) }
+    }
+    val scLogin = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        env = accounts()
+        if (env.scLogged) saveNow { it.put("sc_acc", true) }
     }
     val pickCookies = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         try {
             cookies.parentFile?.mkdirs()
             ctx.contentResolver.openInputStream(uri)?.use { inp -> cookies.outputStream().use { inp.copyTo(it) } }
-            env = env.copy(hasCookies = true)
             useCookies()
-            Vgd.addLog("YouTube: cookies.txt загружен")
+            runCatching { accountSaveNetscape("youtube", cookies.readText()) }
+            env = accounts()
+            Vgd.addLog("YouTube: cookies.txt загружен" + if (env.ytLogged) " — вход для музыки тоже" else "")
         } catch (e: Exception) {
             Vgd.addLog("Ошибка: cookies.txt: ${e.text()}")
         }
@@ -507,11 +618,27 @@ internal fun SettingsScreen(nav: @Composable () -> Unit, style: String, colors: 
         override fun pickFolder() = pickFolder.launch(null)
         override fun vkLogin() = vkLogin.launch(LoginActivity.intent(ctx, LoginActivity.VK))
         override fun youtubeLogin() = ytLogin.launch(LoginActivity.intent(ctx, LoginActivity.YOUTUBE))
+        override fun soundcloud() {
+            if (env.scLogged) {
+                runCatching { accountLogout("soundcloud") }
+                env = accounts()
+                saveNow { it.put("sc_acc", false) }
+            } else {
+                scLogin.launch(LoginActivity.intent(ctx, LoginActivity.SOUNDCLOUD))
+            }
+        }
+        override fun openSite(url: String) {
+            runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+        }
         override fun pickCookies() = pickCookies.launch(arrayOf("text/plain", "*/*"))
         override fun clearCookies() {
             cookies.delete()
-            env = env.copy(hasCookies = false)
-            saveNow { it.put("cookies", "none") }
+            runCatching { accountLogout("youtube") }
+            env = accounts()
+            saveNow {
+                it.put("cookies", "none")
+                it.put("ytm_acc", false)
+            }
         }
 
         @SuppressLint("BatteryLife")
