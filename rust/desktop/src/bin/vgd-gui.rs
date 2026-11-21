@@ -1167,7 +1167,11 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                 ui.add_space(18.0);
                 ui.horizontal(|ui| {
                     ui.label(heading("very good downloader", 17.0));
-                    ui.label(RichText::new("youtube · spotify · apple music · deezer · tidal · soundcloud · яндекс музыка · vk…").size(11.5).color(pal().faint));
+                    // Обрезается «…» по ширине: иначе длинная строка раздвигает колонку шире окна, и справа всё срезается.
+                    ui.add(
+                        egui::Label::new(RichText::new("youtube · spotify · apple music · deezer · tidal · soundcloud · яндекс музыка · vk…").size(11.5).color(pal().faint))
+                            .truncate(),
+                    );
                 });
                 ui.add_space(10.0);
                 self.ui_update_banner(ui);
@@ -2032,7 +2036,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                         }
                     });
                     divider(ui);
-                    row(ui, "масштаб", "размер всего интерфейса. запоминается вместе с размером окна.", |ui| {
+                    row(ui, "масштаб", "размер всего интерфейса в обычном окне. запоминается вместе с размером окна.", |ui| {
                         let opts: Vec<(u32, String)> =
                             [80u32, 90, 100, 110, 125, 150].iter().map(|p| (*p, format!("{p}%"))).collect();
                         let mut cur = (self.s.ui_scale * 100.0).round() as u32;
@@ -2040,6 +2044,10 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                             self.s.ui_scale = cur as f32 / 100.0;
                             self.pending_zoom = Some(self.s.ui_scale);
                         }
+                    });
+                    divider(ui);
+                    row(ui, "подстраивать масштаб под окно", "узкое окно — интерфейс мельче, чтобы всё помещалось и ничего не обрезалось; развёрнутое на весь экран — крупнее (до +50%). выключено — всегда «масштаб» выше.", |ui| {
+                        toggle(ui, &mut self.s.auto_scale);
                     });
                 });
                 }
@@ -2695,8 +2703,20 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if let Some(z) = self.pending_zoom.take() {
-            ctx.set_zoom_factor(z.clamp(0.5, 3.0));
+        // Масштаб: свой из настроек, а с «подстраивать под окно» — ещё и по ширине окна.
+        self.pending_zoom = None;
+        let want = if self.s.auto_scale {
+            let zf = ctx.zoom_factor();
+            let raw_w = ctx.input(|i| {
+                let native = i.viewport().native_pixels_per_point.unwrap_or(i.pixels_per_point / zf);
+                i.viewport_rect().width() * i.pixels_per_point / native.max(0.1)
+            });
+            auto_zoom(self.s.ui_scale, raw_w)
+        } else {
+            self.s.ui_scale.clamp(0.5, 3.0)
+        };
+        if (ctx.zoom_factor() - want).abs() > 0.001 {
+            ctx.set_zoom_factor(want);
         }
         self.handle_events(&ctx);
         if self.s.clipboard_watch {
@@ -2803,6 +2823,26 @@ fn short_dir(dir: &str) -> String {
 
 fn same(a: &Settings, b: &Settings) -> bool {
     serde_json::to_string(a).ok() == serde_json::to_string(b).ok()
+}
+
+/// Масштаб по ширине окна (`raw_w` — ширина в точках без масштаба интерфейса).
+/// Уже, чем нужно странице, — мельче, чтобы ничего не обрезалось; шире обычного (развёрнуто на весь экран) —
+/// крупнее, до +50%. Шаг 5%: при перетаскивании края шрифты не перерисовываются на каждом пикселе.
+fn auto_zoom(scale: f32, raw_w: f32) -> f32 {
+    // Столько точек нужно странице целиком (меню слева + колонка), и с какой ширины интерфейс начинает расти.
+    const FIT: f32 = 700.0;
+    const WIDE: f32 = 1150.0;
+    let base = scale.clamp(0.5, 3.0);
+    let z = if raw_w <= 0.0 {
+        base
+    } else if raw_w < FIT * base {
+        raw_w / FIT
+    } else if raw_w > WIDE * base {
+        base * (raw_w / (WIDE * base)).sqrt().min(1.5)
+    } else {
+        base
+    };
+    ((z * 20.0).round() / 20.0).clamp(0.5, 3.0)
 }
 
 /// Колонка по центру шириной до layout.column из темы.

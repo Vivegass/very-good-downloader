@@ -53,6 +53,8 @@ pub struct Settings {
     pub cookies_file: String,
     /// масштаб интерфейса окна (1.0 = 100%)
     pub ui_scale: f32,
+    /// подстраивать масштаб под окно: узкое — мельче (всё помещается), на весь экран — крупнее
+    pub auto_scale: bool,
     /// размер окна при последнем закрытии (0 — по умолчанию)
     pub win_w: f32,
     pub win_h: f32,
@@ -199,6 +201,7 @@ impl Default for Settings {
             cookies: "chrome".into(),
             cookies_file: String::new(),
             ui_scale: 0.8,
+            auto_scale: true,
             win_w: 0.0,
             win_h: 0.0,
             music_format: "best".into(),
