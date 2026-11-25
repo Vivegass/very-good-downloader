@@ -213,7 +213,15 @@ Inno Setup 6, делает `release\VeryGoodDownloader-Setup-<версия>.exe`
 - song.link (Odesli): `music::odesli` — точные ссылки на тот же трек (YouTube Music → SoundCloud → YouTube) перед поиском.
   С осени 2026 открытый API отвечает `PUBLIC_API_ACCESS_DEPRECATED` — работает только с ключом (`odesli_key`);
   без ключа или после отказа не вызывается.
-- Не делаем: расшифровку `encraw`, торренты/Soulseek (Jackett, Gazelle, slskd) — раздача чужой музыки.
+- P2P (`p2p`, только desktop): `core/src/p2p/` — гибридный движок из Soulseek (`soulseek-client 0.3`, отдельные
+  FLAC-треки как последний источник замены в `music_track`) и BitTorrent (`librqbit 9.1`, magnet-ссылки целиком
+  с выбором FLAC-файлов). Общий Tokio-runtime процесса (`p2p::block_on`) — синхронная очередь на `std::thread`
+  вызывает async-API без своего runtime. Отмена: `CancelHandle` задания → `CancellationToken` (поток-watcher).
+  Magnet можно давать ссылкой в очередь: `magnet:…&so=N` (выбор файла), `torrent:<encoded-magnet>#file=N`.
+  Soulseek требует аккаунт (настройки `slsk_username`/`slsk_password`); без него движок работает только с magnet.
+  Включение — настройка `p2p_enabled`; поиск треков — только для формата «как есть»/flac. Поток — HTTP Range
+  на loopback (hyper), Soulseek качается с докачкой (кеш-префикс + фоновая запись).
+- Не делаем: расшифровку `encraw`, раздачу чужой музыки от себя (upload в librqbit отключён).
 
 ## После 1.11 (правки от пользователей)
 

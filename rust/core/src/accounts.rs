@@ -140,14 +140,23 @@ pub fn wanted(s: &Settings, key: &str) -> bool {
 // ---------- откуда брать звук ----------
 
 /// Источники звука для поиска замены: ключ и название (порядок по умолчанию).
-pub const SOURCES: [(&str, &str); 6] = [
+/// `soulseek` и `trackers` — P2P (desktop-сборка с фичей `p2p`): по умолчанию
+/// в конце, при lossless-формате поднимаются наверх (см. `source_order`).
+pub const SOURCES: [(&str, &str); 8] = [
     ("vk", "VK"),
     ("yandex", "Яндекс Музыка"),
     ("ytmusic", "YouTube Music"),
     ("soundcloud", "SoundCloud"),
     ("audius", "Audius"),
     ("youtube", "YouTube"),
+    ("soulseek", "Soulseek"),
+    ("trackers", "Трекеры"),
 ];
+
+/// P2P-источники доступны только в desktop-сборке с фичей `p2p`.
+pub fn p2p_available() -> bool {
+    cfg!(feature = "p2p")
+}
 
 /// Источник работает от аккаунта пользователя (вошёл и галочка включена).
 pub fn active(s: &Settings, kind: &str) -> bool {
@@ -155,9 +164,17 @@ pub fn active(s: &Settings, kind: &str) -> bool {
         "vk" => s.vk_search && crate::vk::logged_in(),
         "yandex" => s.yandex_acc && crate::yandex_acc::logged_in(),
         "ytmusic" => s.ytm_acc && logged_in("youtube"),
-        "soundcloud" => s.sc_acc && logged_in("soundcloud"),
+        // P2P «активен», когда включён и настроен: такие источники идут первыми.
+        "soulseek" => cfg!(feature = "p2p") && s.p2p_enabled && !s.slsk_username.is_empty() && !s.slsk_password.is_empty(),
+        "trackers" => cfg!(feature = "p2p") && s.p2p_enabled,
         _ => false,
     }
+}
+
+/// Lossless-формат («как есть» / flac): P2P-источники автоматически поднимаются
+/// наверх очереди (soulseek → трекеры), чтобы сначала брался оригинальный FLAC.
+pub fn lossless(s: &Settings) -> bool {
+    matches!(s.music_format.as_str(), "flac" | "best")
 }
 
 /// Порядок из настроек (неизвестное отброшено, недостающее — в конце, как по умолчанию).
@@ -175,8 +192,20 @@ pub fn user_order(s: &Settings) -> Vec<&'static str> {
 
 /// Где искать звук: сначала сервисы, куда пользователь вошёл (в его порядке), потом остальные.
 /// VK и Яндекс без входа пропускаются — там без аккаунта не ищется.
+/// При lossless-формате и включённом P2P: soulseek и трекеры поднимаются в самый
+/// верх (soulseek → трекеры) — сначала ищется оригинальный lossless-файл.
 pub fn source_order(s: &Settings) -> Vec<&'static str> {
-    order_with(&user_order(s), |k| active(s, k))
+    let mut order = order_with(&user_order(s), |k| active(s, k));
+    if lossless(s) && s.p2p_enabled {
+        // Вырезаем P2P-источники и ставим их в начало, в порядке soulseek → trackers.
+        let mut p2p: Vec<&'static str> = order.iter().copied().filter(|k| matches!(*k, "soulseek" | "trackers")).collect();
+        p2p.sort_by_key(|k| if *k == "soulseek" { 0 } else { 1 });
+        order.retain(|k| !matches!(*k, "soulseek" | "trackers"));
+        let mut out = p2p;
+        out.extend(order);
+        return out;
+    }
+    order
 }
 
 fn order_with(order: &[&'static str], is_active: impl Fn(&str) -> bool) -> Vec<&'static str> {
@@ -241,7 +270,29 @@ mod tests {
     #[test]
     fn user_order_fills_missing() {
         let s = Settings { music_order: vec!["youtube".into(), "bogus".into(), "soundcloud".into()], ..Settings::default() };
-        assert_eq!(user_order(&s), vec!["youtube", "soundcloud", "vk", "yandex", "ytmusic", "audius"]);
+        assert_eq!(user_order(&s), vec!["youtube", "soundcloud", "vk", "yandex", "ytmusic", "audius", "soulseek", "trackers"]);
+    }
+
+    #[test]
+    fn lossless_lifts_p2p_to_front() {
+        // FLAC + P2P включён: soulseek → трекеры → остальные (в порядке пользователя).
+        let s = Settings {
+            music_order: vec!["ytmusic".into(), "soulseek".into(), "youtube".into(), "trackers".into()],
+            p2p_enabled: true,
+            music_format: "flac".into(),
+            ..Settings::default()
+        };
+        assert_eq!(source_order(&s)[0], "soulseek");
+        assert_eq!(source_order(&s)[1], "trackers");
+        assert_eq!(source_order(&s)[2], "ytmusic");
+
+        // Сжатый формат — автоподъёма нет: soulseek остаётся на месте пользователя
+        // (второй), trackers идёт первым лишь потому, что активен без аккаунта —
+        // как и другие активные источники. В mp3-режиме P2P в поиске пропускается.
+        let s = Settings { music_order: vec!["ytmusic".into(), "soulseek".into(), "youtube".into()], p2p_enabled: true, music_format: "mp3".into(), ..Settings::default() };
+        let order = source_order(&s);
+        assert_eq!(order.iter().position(|k| *k == "soulseek"), Some(2));
+        assert_eq!(order[0], "trackers");
     }
 
     #[test]

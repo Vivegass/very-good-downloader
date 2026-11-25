@@ -32,6 +32,7 @@ pub struct Request {
     headers: Vec<(String, String)>,
     form: Option<Vec<(String, String)>>,
     timeout: u64,
+    connect_timeout: Option<u64>,
     retries: u32,
     follow: bool,
     proxy: Option<String>,
@@ -66,7 +67,7 @@ fn is_transient_status(code: u16) -> bool {
 
 impl Request {
     fn new(method: Method, url: &str) -> Self {
-        Request { method, url: url.to_string(), headers: Vec::new(), form: None, timeout: 40, retries: 0, follow: true, proxy: None }
+        Request { method, url: url.to_string(), headers: Vec::new(), form: None, timeout: 40, connect_timeout: None, retries: 0, follow: true, proxy: None }
     }
 
     /// Заголовок `Имя: значение`.
@@ -106,6 +107,13 @@ impl Request {
         self
     }
 
+    /// Лимит только на установку соединения, секунды (`--connect-timeout`): мёртвый хост
+    /// отпускает запрос быстрее, чем полный таймаут, а глобальный лимит не трогает.
+    pub fn connect_timeout(mut self, secs: u64) -> Self {
+        self.connect_timeout = Some(secs.max(1));
+        self
+    }
+
     /// Сколько раз повторить при временном сбое (`--retry`).
     pub fn retries(mut self, n: u32) -> Self {
         self.retries = n;
@@ -131,6 +139,7 @@ impl Request {
         };
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(self.timeout)))
+            .timeout_connect(self.connect_timeout.map(Duration::from_secs))
             .http_status_as_error(false)
             .max_redirects(if self.follow { 10 } else { 0 })
             .save_redirect_history(false)

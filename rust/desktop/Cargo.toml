@@ -20,7 +20,7 @@ name = "vgd-gui"
 path = "src/bin/vgd-gui.rs"
 
 [dependencies]
-vgd-core = { path = "../core" }
+vgd-core = { path = "../core", features = ["p2p"] }
 serde.workspace = true
 serde_json.workspace = true
 lexopt = "0.3"

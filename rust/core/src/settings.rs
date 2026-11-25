@@ -115,6 +115,13 @@ pub struct Settings {
     pub sc_acc: bool,
     /// порядок источников звука (ключи accounts::SOURCES); пусто — по умолчанию. Вошедшие — всегда первыми
     pub music_order: Vec<String>,
+    /// Soulseek: поиск отдельных FLAC-треков (только desktop)
+    pub slsk_username: String,
+    pub slsk_password: String,
+    /// 0 — свободный входящий порт
+    pub slsk_listen_port: u16,
+    /// P2P-источники при поиске FLAC (desktop)
+    pub p2p_enabled: bool,
 }
 
 /// Что можно поменять пресетом или у отдельной ссылки (имена полей Settings).
@@ -232,6 +239,10 @@ impl Default for Settings {
             ytm_acc: false,
             sc_acc: false,
             music_order: Vec::new(),
+            slsk_username: String::new(),
+            slsk_password: String::new(),
+            slsk_listen_port: 0,
+            p2p_enabled: false,
             theme: String::new(),
         }
     }

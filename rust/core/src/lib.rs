@@ -10,6 +10,8 @@ pub mod http;
 pub mod media;
 pub mod music;
 pub mod net;
+#[cfg(feature = "p2p")]
+pub mod p2p;
 pub mod queue;
 pub mod settings;
 pub mod sort;

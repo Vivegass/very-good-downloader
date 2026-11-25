@@ -2170,7 +2170,7 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
             }
         });
         ui.add_space(10.0);
-        hint(ui, "откуда брать звук, если трека нет на самом сервисе или его звук защищён. сервисы, куда вы вошли, всегда идут первыми; vk и яндекс без входа пропускаются.");
+        hint(ui, "откуда брать звук, если трека нет на самом сервисе или его звук защищён. сервисы, куда вы вошли, всегда идут первыми; vk и яндекс без входа пропускаются. при формате «как есть»/flac включённые soulseek и трекеры поднимаются в начало — сначала ищется оригинальный lossless-файл.");
         ui.add_space(6.0);
         card(ui, |ui| {
             let order = vgd::accounts::user_order(&self.s);
@@ -2198,12 +2198,38 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                         ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
                     }
                     let (t, c) = if active {
-                        ("ваш аккаунт — первым", pal().ok)
+                        match *k {
+                            // P2P: «активен» = включён и (для soulseek) есть аккаунт.
+                            "soulseek" => ("включён — идёт первым", pal().ok),
+                            "trackers" => ("включён — идёт первым", pal().ok),
+                            _ => ("ваш аккаунт — первым", pal().ok),
+                        }
                     } else if matches!(*k, "vk" | "yandex") {
                         ("без входа пропускается", pal().faint)
+                    } else if *k == "soulseek" {
+                        if !vgd::accounts::p2p_available() {
+                            ("недоступно в этой сборке", pal().faint)
+                        } else if !self.s.p2p_enabled {
+                            ("p2p выключен — пропускается", pal().faint)
+                        } else {
+                            ("нет аккаунта — пропускается", pal().faint)
+                        }
+                    } else if *k == "trackers" {
+                        if !vgd::accounts::p2p_available() {
+                            ("недоступно в этой сборке", pal().faint)
+                        } else if !self.s.p2p_enabled {
+                            ("p2p выключен — пропускается", pal().faint)
+                        } else {
+                            ("", pal().muted)
+                        }
                     } else {
                         ("", pal().muted)
                     };
+                    // При lossless-формате P2P-источники автоматически поднимаются
+                    // наверх — независимо от порядка стрелок.
+                    if matches!(*k, "soulseek" | "trackers") && vgd::accounts::active(&self.s, k) && vgd::accounts::lossless(&self.s) {
+                        ui.label(RichText::new("flac: всегда первым").size(11.5).color(pal().ok));
+                    }
                     ui.label(RichText::new(t).size(11.5).color(c));
                 });
             }
@@ -2406,6 +2432,17 @@ downloader" } else { "very good downloader" }).size(12.5).color(pal().text);
                     row(ui, "ключ song.link (необязательно)", "song.link (odesli) по треку spotify, apple, яндекса или deezer даёт точные ссылки на тот же трек на youtube music, soundcloud и youtube — без поиска по названию. с осени 2026 их api работает только с ключом (запрос — на odesli.co). без ключа программа просто ищет как обычно.", |ui| {
                         ui.add(egui::TextEdit::singleline(&mut self.s.odesli_key).password(true).hint_text("ключ").desired_width(180.0));
                     });
+                    divider(ui);
+                    row(ui, "p2p: soulseek и magnet", "поиск отдельных flac-треков в сети soulseek и скачивание magnet-ссылок. для поиска нужен аккаунт soulseek (без него работают только magnet-раздачи). после смены логина перезапустите программу.", |ui| {
+                        toggle(ui, &mut self.s.p2p_enabled);
+                    });
+                    if self.s.p2p_enabled {
+                        divider(ui);
+                        row(ui, "аккаунт soulseek", "логин и пароль вашего аккаунта soulseek. без них magnet по-прежнему работает, а поиск треков — нет.", |ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.s.slsk_username).hint_text("логин").desired_width(110.0));
+                            ui.add(egui::TextEdit::singleline(&mut self.s.slsk_password).password(true).hint_text("пароль").desired_width(110.0));
+                        });
+                    }
                 });
                 }
 

@@ -214,6 +214,11 @@ impl Downloader {
         self.wait_proxy()?;
         self.tiktok = url.contains("tiktok.com");
         self.asked = url.to_string();
+        // Magnet/раздача — напрямую в P2P-движок (desktop-сборка), без yt-dlp.
+        #[cfg(feature = "p2p")]
+        if crate::p2p::is_magnet(url) || url.trim_start().starts_with("torrent:") {
+            return self.run_p2p_torrent(url);
+        }
         // «Микс → треки» — это видео YouTube, даже если ссылка с music.youtube.com.
         if crate::music::is_music_url(url) && !self.opts.split_tracks {
             return self.run_music(url);
@@ -1088,7 +1093,9 @@ impl Downloader {
         // продолжение многострочного предупреждения (строки с отступом) — не в журнал
         let mut skip_cont = false;
         // --encoding: иначе пути с кириллицей yt-dlp печатает в кодировке консоли (cp1251).
-        let mut full: Vec<String> = vec!["--encoding".into(), "utf-8".into()];
+        // --no-warnings: мелкие предупреждения ([generic] URL could be a direct video link
+        // и подобные) не должны попадать в пользовательский журнал.
+        let mut full: Vec<String> = vec!["--encoding".into(), "utf-8".into(), "--no-warnings".into()];
         full.extend_from_slice(args);
         let (ok, _) = self.spawn_lines(tool("yt-dlp"), &full, false, |me, line, is_err| {
             if line.starts_with("VGDP|") || line.starts_with("VGDF|") {

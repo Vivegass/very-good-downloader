@@ -74,6 +74,8 @@ fn source_label(kind: &str) -> &'static str {
         "ytmusic" => "YouTube Music",
         "soundcloud" => "SoundCloud",
         "audius" => "Audius",
+        "soulseek" => "Soulseek",
+        "trackers" => "трекерах",
         _ => "YouTube",
     }
 }
@@ -559,10 +561,24 @@ impl Downloader {
         let artist1 = want.artist.split(',').next().unwrap_or("").trim().to_string();
         // Порядок: сначала сервисы, куда пользователь вошёл (VK, Яндекс, YouTube Music Premium, SoundCloud Go+ —
         // лучшее качество и редкие треки), затем точные ссылки song.link на тот же трек, затем обычный поиск
-        // в порядке из настроек. VK и Яндекс без входа пропускаются.
+        // в порядке из настроек. VK и Яндекс без входа пропускаются. При lossless и включённом P2P
+        // soulseek и трекеры автоматически идут первыми (см. accounts::source_order).
         let mut odesli = Some(music::odesli(&want, &self.s.odesli_key));
         for kind in crate::accounts::source_order(&self.s) {
             let label = source_label(kind);
+            // P2P-источники: пропускаются, если фича не собрана или выключена в настройках.
+            #[cfg(not(feature = "p2p"))]
+            if matches!(kind, "soulseek" | "trackers") {
+                continue;
+            }
+            #[cfg(feature = "p2p")]
+            if matches!(kind, "soulseek" | "trackers")
+                && (!self.s.p2p_enabled
+                    || !crate::accounts::lossless(&self.s) // P2P отдаёт только lossless
+                    || (kind == "soulseek" && (self.s.slsk_username.is_empty() || self.s.slsk_password.is_empty())))
+            {
+                continue;
+            }
             if !crate::accounts::active(&self.s, kind) {
                 for (l, url) in odesli.take().unwrap_or_default() {
                     queries.push(("direct", l, url));
@@ -573,6 +589,9 @@ impl Downloader {
                 "vk" if t.key.starts_with("vk:") => {}
                 "yandex" if t.key.starts_with("yandex:") => {}
                 "vk" | "yandex" => queries.push((kind, label, base.clone())),
+                // P2P: один запрос на источник, без дублей с кавычками.
+                #[cfg(feature = "p2p")]
+                "soulseek" | "trackers" if !base.is_empty() => queries.push((kind, label, base.clone())),
                 _ => {
                     if let (Some(isrc), "ytmusic") = (&want.isrc, kind) {
                         queries.push(("ytmusic", label, format!("\"{isrc}\"")));
@@ -596,10 +615,38 @@ impl Downloader {
         // Образец для проверки по звуку: 30 с оригинала с Deezer (скачивается один раз, если понадобится).
         let mut sample: Option<Option<PathBuf>> = if self.s.music_verify { None } else { Some(None) };
         let mut tried = std::collections::HashSet::new();
+        // P2P-запрос: один на источник (Soulseek или трекеры) — качает напрямую,
+        // минуя yt-dlp-цикл кандидатов. Жёсткий таймаут — в движке P2P.
+        #[cfg(feature = "p2p")]
+        let p2p_query = crate::p2p::SearchQuery {
+            artist: want.artist.split(',').next().unwrap_or("").trim().to_string(),
+            title: want.title.clone(),
+            album: (!want.album.is_empty()).then(|| want.album.clone()),
+            duration: want.duration.map(std::time::Duration::from_secs_f64),
+            limit: 4,
+        };
+        #[cfg(feature = "p2p")]
+        let p2p_only = std::env::var("VGD_ONLY_SOURCE").ok();
         let result = 'search: {
         for (kind, label, q) in queries {
             if let Err(c) = self.check_cancel() {
                 break 'search Err(c);
+            }
+            // Soulseek/трекеры: поиск и скачивание одним вызовом движка P2P.
+            #[cfg(feature = "p2p")]
+            if matches!(kind, "soulseek" | "trackers") {
+                if p2p_only.as_deref().is_some_and(|o| o != kind) {
+                    continue;
+                }
+                self.p.message = format!("Ищу на {label}: {}", want.display());
+                self.emit();
+                match self.music_p2p_track(&p2p_query, &want, dir, name, kind) {
+                    Ok(g) => break 'search Ok(g),
+                    Err(DlError::Cancelled(m)) => break 'search Err(DlError::Cancelled(m)),
+                    Err(DlError::Failed(m)) if is_network_error(&m) => break 'search fail(m),
+                    Err(DlError::Failed(m)) => last_err = format!("{label}: {}", first_line(&m)),
+                }
+                continue;
             }
             self.p.message = format!("Ищу на {label}: {}", want.display());
             self.emit();
@@ -703,6 +750,140 @@ impl Downloader {
             let _ = std::fs::remove_file(sp);
         }
         result
+    }
+
+    /// Magnet-раздача: P2P-движок скачивает все FLAC-файлы в папку «Музыка» (desktop).
+    #[cfg(feature = "p2p")]
+    pub(super) fn run_p2p_torrent(&mut self, url: &str) -> R<Vec<String>> {
+        use tokio_util::sync::CancellationToken;
+        let locator = crate::p2p::torrent_locator(url).map_err(|e| DlError::Failed(e.to_string()))?;
+        let magnet = match &locator {
+            crate::p2p::SourceLocator::Torrent { magnet, .. } => magnet.clone(),
+            _ => unreachable!("torrent_locator возвращает Torrent"),
+        };
+        let btih = crate::p2p::magnet_param(&magnet, "xt")
+            .and_then(|v| v.rsplit(':').next().map(str::to_string))
+            .unwrap_or_else(|| format!("bt-{}", rand_u64()));
+        self.p.stage = "info".into();
+        self.p.message = "Получаю метаданные раздачи…".into();
+        self.emit();
+        let dir = music::music_root(&self.s).join(safe_name(&format!("BitTorrent {btih}"), 100));
+        std::fs::create_dir_all(&dir).map_err(|e| DlError::Failed(format!("Не удалось создать папку: {e}")))?;
+        // Токен отмены для async-кода: следим за CancelHandle задания из потока.
+        let token = CancellationToken::new();
+        let (watch_token, cancel_handle) = (token.clone(), self.cancel.clone());
+        let watcher = std::thread::spawn(move || {
+            while !watch_token.is_cancelled() {
+                if cancel_handle.is_cancelled() {
+                    watch_token.cancel();
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        });
+        let result = crate::p2p::block_on(async {
+            let engine = crate::p2p::engine().await?;
+            let files = engine.torrent_files(&magnet, token.clone()).await?;
+            if files.is_empty() {
+                return Err(crate::p2p::P2pError::NotFound("в раздаче нет FLAC-файлов".into()));
+            }
+            let mut done = Vec::new();
+            for (i, file) in files.iter().enumerate() {
+                let name = file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("track{i}.flac"));
+                let destination = dir.join(safe_name(&name, 150));
+                let request = crate::p2p::DownloadRequest {
+                    locator: crate::p2p::SourceLocator::Torrent { magnet: magnet.clone(), file_index: file.index },
+                    destination,
+                    progress: None,
+                    cancel: token.clone(),
+                };
+                match engine.download(request).await {
+                    Ok(audio) => done.push(audio),
+                    Err(crate::p2p::P2pError::Cancelled) => return Err(crate::p2p::P2pError::Cancelled),
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(done)
+        });
+        token.cancel();
+        let _ = watcher.join();
+        let done = result.map_err(|e: crate::p2p::P2pError| {
+            if e.is_cancelled() { DlError::Cancelled(String::new()) } else { DlError::Failed(e.to_string()) }
+        })?;
+        let mut files: Vec<String> = Vec::new();
+        for audio in &done {
+            let p = &audio.path;
+            if self.s.source_log {
+                super::note_source(p, &audio.source_description, &magnet, &self.asked);
+            }
+            files.push(p.to_string_lossy().into_owned());
+        }
+        self.results.extend(files.iter().cloned());
+        let msg = format!("BitTorrent: {} файл(ов) в {}", files.len(), dir.display());
+        self.log(msg.clone());
+        self.p = Progress {
+            stage: "done".into(),
+            percent: 100.0,
+            files: self.results.clone(),
+            message: msg,
+            title: format!("BitTorrent {btih}"),
+            ..Default::default()
+        };
+        self.emit();
+        Ok(self.results.clone())
+    }
+
+    /// Soulseek через P2P-движок: поиск FLAC, докачка в папку трека, прогресс и отмена.
+    #[cfg(feature = "p2p")]
+    fn music_p2p_track(&mut self, query: &crate::p2p::SearchQuery, want: &Track, dir: &Path, name: Option<&str>, kind: &str) -> R<Got> {
+        use tokio_util::sync::CancellationToken;
+        let _ = std::fs::create_dir_all(dir);
+        let destination = dir.join(format!("{}.flac", track_stem(want, name)));
+        // Отмена задания (std) → токен Tokio: тот же watcher, что у magnet-раздач.
+        let token = CancellationToken::new();
+        let (watch_token, cancel_handle) = (token.clone(), self.cancel.clone());
+        let watcher = std::thread::spawn(move || {
+            while !watch_token.is_cancelled() {
+                if cancel_handle.is_cancelled() {
+                    watch_token.cancel();
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        });
+        // Прогресс: shared Progress + общий on_progress, чтобы колбэк P2P показывал проценты.
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(Progress {
+            notice: self.p.notice.clone(),
+            stage: "audio".into(),
+            title: want.display(),
+            message: String::new(),
+            ..Default::default()
+        }));
+        let on_progress = self.on_progress.clone();
+        let progress: crate::p2p::ProgressCallback = std::sync::Arc::new(move |t| {
+            if let Ok(mut p) = shared.lock() {
+                p.percent = if t.total > 0 { t.downloaded as f32 / t.total as f32 * 100.0 } else { 0.0 };
+                p.speed = t.bytes_per_second.map(|b| crate::media::fmt_bytes(b as f64)).unwrap_or_default();
+                p.message = t.message;
+                on_progress(&p);
+            }
+        });
+        let result = crate::p2p::block_on(async {
+            match kind {
+                "soulseek" => crate::p2p::fetch_soulseek(query, &destination, Some(progress), token.clone()).await,
+                _ => crate::p2p::fetch_tracker_track(query, &destination, Some(progress), token.clone()).await,
+            }
+        });
+        token.cancel();
+        let _ = watcher.join();
+        let done = result.map_err(|e: crate::p2p::P2pError| {
+            if e.is_cancelled() { DlError::Cancelled(String::new()) } else { DlError::Failed(e.to_string()) }
+        })?;
+        // Неудачные кандидаты могли оставить кусок файла — итог проверен по размеру
+        // и сигнатуре fLaC внутри provider.download.
+        let label = if kind == "soulseek" { "Soulseek" } else { "трекерах" };
+        self.log(format!("«{}» — взял на {label} ({}).", want.display(), done.source_description));
+        Ok(Got { path: done.path, from: label.to_string(), url: format!("{kind}:{}", query.text()) })
     }
 
     /// Звук трека прямо с Яндекс Музыки (вход пользователя): flac для «как есть» и «flac», иначе лучший сжатый.

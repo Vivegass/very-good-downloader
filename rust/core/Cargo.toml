@@ -8,6 +8,14 @@ description = "Very Good Downloader: ядро, общее для Windows и Andr
 name = "vgd_core"
 path = "src/lib.rs"
 
+[features]
+# Тяжёлые P2P-клиенты нужны только desktop-сборке; Android остаётся без них.
+p2p = [
+    "dep:async-trait", "dep:futures", "dep:http-body-util", "dep:hyper", "dep:hyper-util",
+    "dep:librqbit", "dep:librqbit-upnp", "dep:soulseek-client", "dep:thiserror", "dep:tokio", "dep:tokio-util",
+    "dep:tracing", "dep:tracing-subscriber", "dep:url", "dep:bytes", "dep:tokio-stream", "dep:percent-encoding",
+]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -16,6 +24,27 @@ sha2 = "0.11.1"
 base64 = "0.23.1"
 # HTTP вместо curl.exe: rustls + встроенные корневые сертификаты, gzip, SOCKS-прокси
 ureq = { version = "3.5", default-features = false, features = ["rustls", "gzip", "socks-proxy"] }
+
+async-trait = { version = "0.1.92", optional = true }
+futures = { version = "0.3.34", optional = true }
+bytes = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+tokio-stream = { version = "0.1", optional = true }
+hyper = { version = "1.9", features = ["http1", "server"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+# Точные версии: API молодых P2P-клиентов меняется между минорными релизами.
+# P2P-движок не раздаёт: API трекеров и порты под него не нужны. UPnP — для проброса
+# порта Soulseek на роутере (крейт уже в дереве через librqbit, лишних зависимостей нет).
+librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls", "disable-upload"], optional = true }
+librqbit-upnp = { version = "=9.1.0", package = "librqbit-upnp", optional = true }
+soulseek-client = { version = "=0.3.0", optional = true }
+thiserror = { version = "2", optional = true }
+tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"], optional = true }
+tokio-util = { version = "0.7.20", features = ["rt"], optional = true }
+tracing = { version = "0.1.44", optional = true }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"], optional = true }
+url = { version = "2", optional = true }
+percent-encoding = { version = "2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # только системный прокси Windows (net.rs)
